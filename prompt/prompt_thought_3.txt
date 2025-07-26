@@ -1,0 +1,169 @@
+import os
+import json
+import random
+import uuid
+from z3 import *
+import openai
+
+# =============================
+# LLM Prompt 调用模块（含思维链）
+# =============================
+def call_gpt4_logical_nl(expressions, api_key, with_chain=False):
+    openai.api_key = api_key
+
+    prompt_template = f"""
+You are a logical reasoning expert. Your task is to convert logical expressions written in Z3-like syntax into clear and concise English sentences suitable for natural language reasoning.
+
+The expressions may include logical constructs like comparisons, implications, boolean functions, and arithmetic operations.
+
+Respond with a list of English sentences, one for each expression, in the same order.
+
+{'In addition, explain the reasoning step-by-step for each expression.' if with_chain else ''}
+
+Here are the expressions:
+{chr(10).join(f'- {e}' for e in expressions)}
+"""
+
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "user", "content": prompt_template}
+            ],
+            temperature=0.4,
+            timeout=60
+        )
+        return response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print("[ERROR] OpenAI API call failed:", e)
+        return None
+
+# =============================
+# 规则生成器 Rule Generator
+# =============================
+def generate_rule_instance():
+    context_exprs = [
+        "Car_X_Speed > Car_Y_Speed",
+        "Car_X_Speed > 0",
+        "Car_Y_Speed > 0"
+    ]
+
+    logical_steps = [
+        "Car_X_Speed > Car_Y_Speed",
+        "And(Car_X_Speed > 0, Car_Y_Speed > 0)",
+        "Implies(And(Car_X_Speed > Car_Y_Speed, Car_X_Speed > 0, Car_Y_Speed > 0), Car_X_overtakes_Y)"
+    ]
+
+    correct_answer_expr = "Car_X_overtakes_Y == True"
+    distractor_exprs = [
+        "Car_Y_overtakes_X == True",
+        "Car_X_Speed < Car_Y_Speed",
+        "Car_X_Speed == Car_Y_Speed"
+    ]
+
+    all_answers = [correct_answer_expr] + distractor_exprs
+    random.shuffle(all_answers)
+    label = all_answers.index(correct_answer_expr)
+
+    return {
+        "context_exprs": context_exprs,
+        "logical_steps_z3": logical_steps,  # 保留原始Z3表达式
+        "answers": all_answers,
+        "label": label,
+        "id": str(uuid.uuid4())
+    }
+
+# =============================
+# 表达式解析器（替代 eval）
+# =============================
+def parse_z3_expr(expr_str, symbols):
+    try:
+        return eval(expr_str, {**symbols, "And": And, "Or": Or, "Implies": Implies, "Not": Not})
+    except Exception as e:
+        print("[Z3 PARSE ERROR]", expr_str, "=>", e)
+        return None
+
+# =============================
+# Z3 验证器 Verifier
+# =============================
+def verify_with_z3(exprs):
+    symbols = {
+        "Car_X_Speed": Int("Car_X_Speed"),
+        "Car_Y_Speed": Int("Car_Y_Speed"),
+        "Car_X_overtakes_Y": Bool("Car_X_overtakes_Y"),
+        "Car_Y_overtakes_X": Bool("Car_Y_overtakes_X")
+    }
+
+    for ans in exprs['answers']:
+        try:
+            s = Solver()
+            for ctx in exprs['context_exprs']:
+                z3_ctx = parse_z3_expr(ctx, symbols)
+                if z3_ctx is not None:
+                    s.add(z3_ctx)
+            rule = parse_z3_expr(exprs['logical_steps_z3'][-1], symbols)
+            if rule is not None:
+                s.add(rule)
+            z3_ans = parse_z3_expr(ans, symbols)
+            if z3_ans is not None:
+                s.add(z3_ans)
+
+            if s.check() == sat:
+                return True
+        except Exception as e:
+            print("[Z3 ERROR]", e)
+            continue
+    return False
+
+# =============================
+# 主函数 Sample Builder
+# =============================
+def main(output_path="output/samples.jsonl", num_samples=5, api_key_path="api_key.txt"):
+    if not os.path.exists(api_key_path):
+        raise FileNotFoundError(f"API key file '{api_key_path}' not found.")
+
+    with open(api_key_path, 'r') as keyfile:
+        api_key = keyfile.read().strip()
+    if not api_key:
+        raise ValueError("OpenAI API key file is empty.")
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    written_count = 0
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for _ in range(num_samples * 3):
+            sample_expr = generate_rule_instance()
+            if not verify_with_z3(sample_expr):
+                continue
+
+            context_nl = call_gpt4_logical_nl(sample_expr['context_exprs'], api_key)
+            answers_nl = call_gpt4_logical_nl(sample_expr['answers'], api_key)
+            logical_steps_nl = call_gpt4_logical_nl(sample_expr['logical_steps_z3'], api_key)
+            chain_of_thought = call_gpt4_logical_nl(sample_expr['logical_steps_z3'], api_key, with_chain=True)
+
+            if not context_nl or not answers_nl or not logical_steps_nl:
+                continue
+
+            result = {
+                "context": context_nl.split('\n'),
+                "question": "What can be concluded about Car X and Car Y?",
+                "answers": answers_nl.split('\n'),
+                "logical_steps": logical_steps_nl.split('\n'),  # ✅ 保存自然语言逻辑步骤
+                "logical_steps_z3": sample_expr['logical_steps_z3'],  # ✅ 保留Z3版本供调试验证
+                "chain_of_thought": chain_of_thought,
+                "label": sample_expr['label'],
+                "id": sample_expr['id']
+            }
+            f.write(json.dumps(result, ensure_ascii=False) + '\n')
+            written_count += 1
+            print(f"[+] Sample {written_count} written")
+
+            if written_count >= num_samples:
+                break
+
+if __name__ == "__main__":
+    main()
+
+以上的代码是我的新思路，你需要做一下的工作：
+1. 加入deepseek-v3的调用程序，思路跟call_gpt4_logical_nl一样, api key所在文件在ds-api_key.txt中
+2. 升级一个Rule类，单独封装成一个类，先用z3py设计出modus_ponens逻辑，要求封装完整，方便调用，有多种方法，而且要考虑到结合prompt
