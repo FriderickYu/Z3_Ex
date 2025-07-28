@@ -1,0 +1,85 @@
+You are a symbolic z3py logic code generator and an LSAT-style question author.
+Your output must follow EXACTLY the JSON structure shown in the examples, without any extra content.
+
+Given the Z3-style logic expressions below, you must generate a **single-choice LSAT-style reasoning question**, where the correct answer can be deduced **only by following the full reasoning path implied by all rules together**, and based on the following elements: **z3 rules**, **variable descriptions**, and **reasoning chain**:
+
+Input Z3 Rules:
+{z3_exprs}
+
+Variable Descriptions:
+{var_bindings}
+
+Reasoning Chain (Step by Step Inference Logic):
+{logical_steps}
+
+Instructions:
+
+1. Create a realistic and varied English scenario that **naturally illustrates all of the above rules together as a multi-step reasoning chain**.
+    - Each time, the scenario must be unique and not be a variation of any other scenario you have previously created.
+    - Include names, roles, places, and specific details that make it concrete.
+    - Avoid repeating themes or sentence structures.
+    - Make sure all facts needed to infer the correct answer are present in the context.
+    - The scenario should involve logical conditions where the variables represent meaningful real-world states.
+
+2. Provide four answer choices (A, B, C, D). One must be logically valid given the full chain; others are distractors.
+    - The correct answer must correspond to the **final logical conclusion** derived from the entire rule chain.
+    - Distractors should be plausible but logically invalid based on the given premises.
+    - Include common logical fallacies in distractors (e.g., affirming the consequent, denying the antecedent, incomplete reasoning).
+
+3. The correct answer must be derivable only by combining ALL the given rules in sequence.
+
+4. Ensure:
+    - The reasoning requires multiple steps following the logical chain.
+    - No shortcuts or single-rule inferences lead to the correct answer.
+    - The context provides all necessary information without ambiguity.
+
+Your output JSON must have these keys:
+
+* "context": A short, realistic English scenario illustrating the full reasoning chain with concrete details.
+
+* "question": An LSAT-style question asking which inference is valid.
+
+* "answers": An array of four choices: ["A. …", "B. …", "C. …", "D. …"]
+
+* "label": The letter ("A"–"D") of the correct choice.
+
+* "z3": A JSON array of Z3-style expression strings encoding:
+    1. Declaration of Bool symbols,
+    2. All logical relations using Implies, And, Or, etc.
+
+Use Structured Output: wrap all Z3 expressions in a JSON array.
+Use Code Generation style: each item must be a valid Z3 expression string, for example:
+
+```
+"P = Bool('P')"
+"Q = Bool('Q')"
+"Implies(P, Q)"
+```
+
+**Do not include** any extra commentary, narrative, or metadata. Return **only** the JSON object.
+
+Example output format:
+```json
+{{
+  "context": "Dr. Martinez is evaluating student performance in her advanced chemistry course. The course has specific requirements: students must pass both the midterm exam AND submit their research project to qualify for the final exam. Additionally, students who qualify for the final exam AND achieve a score above 85% will receive department recognition. Furthermore, students with department recognition automatically qualify for the honors program.",
+  "question": "If Sarah passed her midterm exam and submitted her research project, and she scored 87% on her final exam, which of the following can be validly concluded?",
+  "answers": [
+    "A. Sarah will receive department recognition and qualify for the honors program",
+    "B. Sarah qualified for the final exam but may not receive department recognition",
+    "C. Sarah submitted her research project but did not pass the midterm",
+    "D. Sarah will qualify for the honors program but not receive department recognition"
+  ],
+  "label": "A",
+  "z3": [
+    "passed_midterm = Bool('passed_midterm')",
+    "submitted_project = Bool('submitted_project')",
+    "qualified_final = Bool('qualified_final')",
+    "scored_above_85 = Bool('scored_above_85')",
+    "dept_recognition = Bool('dept_recognition')",
+    "honors_program = Bool('honors_program')",
+    "Implies(And(passed_midterm, submitted_project), qualified_final)",
+    "Implies(And(qualified_final, scored_above_85), dept_recognition)",
+    "Implies(dept_recognition, honors_program)"
+  ]
+}}
+```

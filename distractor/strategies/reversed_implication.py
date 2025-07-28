@@ -1,4 +1,4 @@
-# 文件：distractors/reversed_implication.py
+# 文件：distractor/strategies/reversed_implication.py
 # 说明：逻辑方向反转型干扰项生成器（Reversed Implication）
 
 from typing import List, Dict
@@ -32,20 +32,30 @@ class ReversedImplicationDistractor:
             if not premises or conclusion is None:
                 continue
 
-            # 多前提暂不支持，默认只取第一个前提项
-            premise_expr = premises[0]
+            try:
+                # 处理多前提的情况
+                if len(premises) == 1:
+                    premise_expr = premises[0]
+                else:
+                    # 将多个前提合并为一个 And 表达式
+                    premise_expr = z3.And(*premises)
 
-            # 构造反向蕴含表达式：conclusion → premise_expr
-            reversed_implication = z3.Implies(conclusion, premise_expr)
+                # 构造反向蕴含表达式：conclusion → premise_expr
+                reversed_implication = z3.Implies(conclusion, premise_expr)
 
-            distractors.append({
-                "premises_expr": [reversed_implication],
-                "conclusion_expr": conclusion,
-                "description": "反向推理：将原推理方向 C ← A∧B 反转为 A∧B ← C",
-                "strategy": "reversed_implication",
-                "rule": rule,
-                "original_expr": premise_expr,
-                "perturbed_expr": reversed_implication
-            })
+                distractors.append({
+                    "premises_expr": [reversed_implication],
+                    "conclusion_expr": conclusion,
+                    "description": "反向推理：将原推理方向 C ← A∧B 反转为 A∧B ← C",
+                    "strategy": "reversed_implication",
+                    "rule": rule,
+                    "original_expr": premise_expr,
+                    "perturbed_expr": reversed_implication
+                })
+
+            except Exception as e:
+                # 如果生成失败，跳过这个干扰项
+                print(f"[DEBUG] ReversedImplicationDistractor 生成失败: {e}")
+                continue
 
         return distractors

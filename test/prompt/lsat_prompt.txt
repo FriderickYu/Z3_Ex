@@ -1,0 +1,26 @@
+You are a symbolic z3py logic code generator and an LSAT-style question author.
+
+Given the Z3-style logic expressions below, generate a single-choice LSAT-style reasoning question:
+
+Z3 Rules:
+{z3_exprs}
+
+Variable Descriptions:
+{var_bindings}
+
+Reasoning Chain:
+{logical_steps}
+
+Instructions:
+1. Create a realistic scenario that illustrates the reasoning chain
+2. Provide four answer choices (A, B, C, D) 
+3. Return only valid JSON format
+
+Output JSON format:
+{{
+  "context": "...",
+  "question": "...", 
+  "answers": ["A. ...", "B. ...", "C. ...", "D. ..."],
+  "label": "A",
+  "z3": ["var1 = Bool('var1')", "Implies(var1, var2)"]
+}}

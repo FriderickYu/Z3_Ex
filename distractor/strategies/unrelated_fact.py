@@ -16,7 +16,23 @@ class UnrelatedFactDistractor:
         参数：
             available_vars: 可供组合的布尔变量池，需来自主 DAG 构造过程
         """
-        self.available_vars = available_vars
+        # 过滤出简单的布尔变量，避免复杂表达式
+        self.available_vars = [var for var in available_vars if self._is_simple_bool_var(var)]
+
+        # 如果过滤后没有变量，创建一些默认变量
+        if not self.available_vars:
+            self.available_vars = [z3.Bool(f"UnrelatedVar_{i}") for i in range(3)]
+
+    def _is_simple_bool_var(self, expr):
+        """
+        检查表达式是否为简单的布尔变量（不是复合表达式）
+        """
+        try:
+            return (z3.is_const(expr) and
+                    z3.is_bool(expr) and
+                    expr.decl().kind() == z3.Z3_OP_UNINTERPRETED)
+        except:
+            return False
 
     def generate(self, logical_steps: List[Dict], num_facts: int = 1) -> List[Dict]:
         """
@@ -36,21 +52,37 @@ class UnrelatedFactDistractor:
             conclusion = step.get("conclusion_expr")
             rule = step.get("rule")
 
-            if not conclusion:
+            if conclusion is None:
                 continue
 
             # 从 available_vars 中随机选择若干无关组合
             for _ in range(num_facts):
-                selected_vars = random.sample(self.available_vars, k=min(2, len(self.available_vars)))
-                unrelated_expr = z3.And(*selected_vars) if len(selected_vars) > 1 else selected_vars[0]
+                try:
+                    # 确保有足够的变量可选择
+                    if len(self.available_vars) == 0:
+                        continue
 
-                distractors.append({
-                    "premises_expr": [unrelated_expr],
-                    "conclusion_expr": conclusion,
-                    "description": f"无关事实：与主推理链无关的事实组合 {unrelated_expr}",
-                    "strategy": "unrelated_fact",
-                    "rule": rule,
-                    "perturbed_expr": unrelated_expr
-                })
+                    num_to_select = min(2, len(self.available_vars))
+                    selected_vars = random.sample(self.available_vars, k=num_to_select)
+
+                    # 构造无关表达式
+                    if len(selected_vars) == 1:
+                        unrelated_expr = selected_vars[0]
+                    else:
+                        unrelated_expr = z3.And(*selected_vars)
+
+                    distractors.append({
+                        "premises_expr": [unrelated_expr],
+                        "conclusion_expr": conclusion,
+                        "description": f"无关事实：与主推理链无关的事实组合 {unrelated_expr}",
+                        "strategy": "unrelated_fact",
+                        "rule": rule,
+                        "perturbed_expr": unrelated_expr
+                    })
+
+                except Exception as e:
+                    # 如果生成失败，跳过这个干扰项
+                    print(f"[DEBUG] UnrelatedFactDistractor 生成失败: {e}")
+                    continue
 
         return distractors
