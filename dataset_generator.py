@@ -11,6 +11,8 @@ from dag.dag_builder import build_reasoning_dag
 from dag.validator import validate_logical_steps
 from distractor.generator import DistractorGenerator
 from api_key.llm_dispatcher import LLMDispatcher
+from utils.consistency_validator import ConsistencyValidator
+from utils.enhanced_prompt_builder import EnhancedPromptBuilder
 
 
 # 内嵌安全变量提取器
@@ -83,7 +85,9 @@ class DatasetGenerator:
         self.llm = llm_dispatcher
         self.prompt_template = self._load_prompt_template(prompt_template_path)
         self.logger = logging.getLogger("dataset_generator")
-        self.extractor = SafeVariableExtractor()  # 添加安全提取器
+        self.extractor = SafeVariableExtractor()
+        self.validator = ConsistencyValidator()
+        self.prompt_builder = EnhancedPromptBuilder(prompt_template_path)
 
     def _load_prompt_template(self, path: str) -> str:
         """加载prompt模板"""
@@ -215,114 +219,111 @@ class DatasetGenerator:
             return distractors[:num_distractors] if distractors else []
 
     def generate_single_sample(self, max_depth: int = 3) -> Dict[str, Any]:
-        """生成单个数据样本"""
-        try:
-            # 1. 构建推理DAG
-            root, logical_steps = build_reasoning_dag(max_depth=max_depth)
+        """生成单个数据样本（增加双向约束验证）"""
+        max_constraint_attempts = 3  # 最大约束重试次数
+        previous_violations = []
 
-            # 2. 验证逻辑步骤
-            valid_steps, failed_steps = validate_logical_steps(logical_steps)
-            if len(valid_steps) < 2:
-                self.logger.warning("生成的推理步骤太少，跳过")
-                return None
-
-            # 3. 提取变量和生成绑定
-            variables = self._extract_variables_from_dag(root)
-            if not variables:
-                self.logger.warning("未能提取到变量，跳过")
-                return None
-
-            var_bindings = self._generate_variable_bindings(variables)
-
-            # 4. 安全地生成干扰项
+        for attempt in range(max_constraint_attempts):
             try:
-                # 使用安全提取器创建变量
-                simple_vars = self.extractor.create_safe_bool_vars(variables, max_count=8)
+                # 1. 构建推理DAG（保持原有逻辑）
+                root, logical_steps = build_reasoning_dag(max_depth=max_depth)
+                valid_steps, failed_steps = validate_logical_steps(logical_steps)
 
-                if not simple_vars:
-                    self.logger.warning("无法创建有效的变量，跳过干扰项生成")
-                    selected_distractors = []
+                if len(valid_steps) < 2:
+                    self.logger.warning(f"推理步骤太少，重试 (attempt {attempt + 1})")
+                    continue
+
+                # 2. 提取变量和生成绑定（保持原有逻辑）
+                variables = self._extract_variables_from_dag(root)
+                if not variables:
+                    self.logger.warning(f"未能提取到变量，重试 (attempt {attempt + 1})")
+                    continue
+
+                var_bindings = self._generate_variable_bindings(variables)
+
+                # 3. 使用增强的prompt构建器
+                enhanced_prompt = self.prompt_builder.build_constrained_prompt(
+                    z3_exprs=self._format_z3_expressions(valid_steps, var_bindings),
+                    var_bindings=var_bindings,
+                    logical_steps=valid_steps,
+                    previous_violations=previous_violations
+                )
+
+                # 4. 调用LLM
+                self.logger.info(f"调用LLM生成自然语言题目 (attempt {attempt + 1})...")
+                response = self.llm.call(enhanced_prompt)
+
+                if not response:
+                    self.logger.error(f"LLM调用失败，重试 (attempt {attempt + 1})")
+                    continue
+
+                # 5. 解析响应
+                sample = self._parse_llm_response(response, valid_steps, var_bindings)
+                if not sample:
+                    self.logger.error(f"响应解析失败，重试 (attempt {attempt + 1})")
+                    continue
+
+                # 6. 双向约束验证
+                is_valid, violations = self.validator.validate_sample(sample)
+
+                if is_valid:
+                    self.logger.info("✅ 样本通过双向约束验证")
+                    return sample
                 else:
-                    generator = DistractorGenerator(available_vars=simple_vars)
-                    distractors = generator.generate_all(valid_steps, num_per_strategy=2)
-                    selected_distractors = self._select_distractors(distractors, num_distractors=3)
+                    self.logger.warning(f"❌ 约束验证失败 (attempt {attempt + 1}): {violations}")
+                    previous_violations = violations
+
+                    # 如果是最后一次尝试，返回部分合格的样本
+                    if attempt == max_constraint_attempts - 1:
+                        self.logger.info("返回部分合格样本")
+                        sample['validation_warnings'] = violations
+                        return sample
 
             except Exception as e:
-                self.logger.warning(f"干扰项生成失败: {e}")
-                selected_distractors = []
+                self.logger.error(f"生成样本时出错 (attempt {attempt + 1}): {e}")
+                continue
 
-            # 5. 格式化输入信息
-            z3_exprs = self._format_z3_expressions(valid_steps, var_bindings)
-            reasoning_chain = self._format_reasoning_chain(valid_steps)
+        self.logger.error("所有约束重试都失败")
+        return None
 
-            if not z3_exprs:
-                self.logger.warning("无法格式化Z3表达式，跳过")
+    def _parse_llm_response(self, response: str, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> Dict:
+        """解析LLM响应并添加元数据"""
+        try:
+            # 提取JSON（保持原有逻辑）
+            json_start = response.find('{')
+            json_end = response.rfind('}') + 1
+            if json_start != -1 and json_end > json_start:
+                json_str = response[json_start:json_end]
+                result = json.loads(json_str)
+
+                # 添加元数据（保持原有逻辑）
+                result['metadata'] = {
+                    'depth': len(valid_steps),
+                    'variables_count': len(var_bindings),
+                    'z3_logical_steps': [step.get('conclusion') for step in valid_steps],
+                    'validation_passed': len(valid_steps),
+                    'constraint_validation': 'pending'  # 新增：约束验证状态
+                }
+
+                return result
+            else:
+                self.logger.error("无法从LLM响应中提取JSON")
                 return None
 
-            # 6. 构建prompt
-            prompt = self.prompt_template.format(
-                z3_exprs="\n".join(z3_exprs),
-                var_bindings="\n".join([f"{var}: {desc}" for var, desc in var_bindings.items()]),
-                logical_steps=reasoning_chain
-            )
-
-            # 7. 调用LLM
-            self.logger.info("调用LLM生成自然语言题目...")
-            response = self.llm.call(prompt)
-
-            if not response:
-                self.logger.error("LLM调用失败")
-                return None
-
-            # 8. 解析响应
-            try:
-                # 尝试提取JSON
-                json_start = response.find('{')
-                json_end = response.rfind('}') + 1
-                if json_start != -1 and json_end > json_start:
-                    json_str = response[json_start:json_end]
-                    result = json.loads(json_str)
-
-                    # 添加元数据
-                    result['metadata'] = {
-                        'depth': len(valid_steps),
-                        'variables_count': len(variables),
-                        'distractors_used': [d.get('strategy') for d in selected_distractors],
-                        'z3_logical_steps': [step.get('conclusion') for step in valid_steps],
-                        'validation_passed': len(valid_steps),
-                        'validation_failed': len(failed_steps)
-                    }
-
-                    return result
-                else:
-                    self.logger.error("无法从LLM响应中提取JSON")
-                    return None
-
-            except json.JSONDecodeError as e:
-                self.logger.error(f"JSON解析失败: {e}")
-                self.logger.debug(f"LLM响应: {response}")
-                return None
-
-        except Exception as e:
-            self.logger.error(f"生成样本时出错: {e}")
-            import traceback
-            self.logger.debug(traceback.format_exc())
+        except json.JSONDecodeError as e:
+            self.logger.error(f"JSON解析失败: {e}")
             return None
 
-    def generate_dataset(
-            self,
-            num_samples: int,
-            output_path: str,
-            max_depth_range: tuple = (2, 4)
-    ) -> None:
-        """生成完整数据集"""
-        self.logger.info(f"开始生成 {num_samples} 个样本的数据集")
+    def generate_dataset(self, num_samples: int, output_path: str, max_depth_range: tuple = (2, 4)) -> None:
+        """生成完整数据集（添加约束验证统计）"""
+        self.logger.info(f"开始生成 {num_samples} 个样本的数据集（启用双向约束验证）")
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         successful_samples = []
         attempts = 0
-        max_attempts = num_samples * 3  # 允许失败
+        max_attempts = num_samples * 3
+        constraint_stats = {"passed": 0, "failed": 0, "partial": 0}
 
         while len(successful_samples) < num_samples and attempts < max_attempts:
             attempts += 1
@@ -333,16 +334,27 @@ class DatasetGenerator:
             sample = self.generate_single_sample(max_depth=depth)
             if sample:
                 successful_samples.append(sample)
-                self.logger.info(f"成功生成样本 {len(successful_samples)}")
+
+                # 统计约束验证结果
+                if 'validation_warnings' not in sample:
+                    constraint_stats["passed"] += 1
+                    self.logger.info(f"✅ 成功生成高质量样本 {len(successful_samples)}")
+                else:
+                    constraint_stats["partial"] += 1
+                    self.logger.info(f"⚠️ 生成部分合格样本 {len(successful_samples)}")
             else:
-                self.logger.warning(f"样本生成失败 (尝试 {attempts})")
+                constraint_stats["failed"] += 1
+                self.logger.warning(f"❌ 样本生成失败 (尝试 {attempts})")
 
         # 保存数据集
         with open(output_path, 'w', encoding='utf-8') as f:
             for sample in successful_samples:
                 f.write(json.dumps(sample, ensure_ascii=False) + '\n')
 
+        # 输出统计信息
         self.logger.info(f"数据集生成完成: {len(successful_samples)} 个样本保存到 {output_path}")
+        self.logger.info(
+            f"约束验证统计: 完全通过={constraint_stats['passed']}, 部分通过={constraint_stats['partial']}, 失败={constraint_stats['failed']}")
 
 
 def main():
@@ -355,8 +367,8 @@ def main():
 
     # 初始化LLM调度器 (根据你的需要选择模型)
     llm = LLMDispatcher(
-        model_name="gpt4",  # 或 "deepseek-chat"
-        api_key_path="api_key/openai_api_key.txt",  # 根据实际路径调整
+        model_name="deepseek-chat",  # 或 "deepseek-chat"
+        api_key_path="api_key/ds-api_key.txt",  # 根据实际路径调整
         retries=3
     )
 
@@ -368,7 +380,7 @@ def main():
 
     # 生成数据集
     generator.generate_dataset(
-        num_samples=10,
+        num_samples=1,
         output_path="output/lsat_dataset.jsonl",
         max_depth_range=(2, 4)
     )
