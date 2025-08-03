@@ -1,85 +1,113 @@
-You are a symbolic z3py logic code generator and an LSAT-style question author.
-Your output must follow EXACTLY the JSON structure shown in the examples, without any extra content.
+You are an expert LSAT question designer specializing in formal logic reasoning. Your task is to create a high-quality logical reasoning question that requires multi-step inference following the exact logical rules provided.
 
-Given the Z3-style logic expressions below, you must generate a **single-choice LSAT-style reasoning question**, where the correct answer can be deduced **only by following the full reasoning path implied by all rules together**, and based on the following elements: **z3 rules**, **variable descriptions**, and **reasoning chain**:
+**CRITICAL REQUIREMENTS:**
+1. Use ALL provided variables in a coherent, single-domain scenario
+2. The reasoning must follow the EXACT logical chain specified
+3. The correct answer can ONLY be derived by following ALL steps in sequence
+4. Generate realistic scenarios that naturally embody the logical relationships
 
-Input Z3 Rules:
+**Input Elements:**
+
+Z3 Logical Rules:
 {z3_exprs}
 
-Variable Descriptions:
+Variable Semantic Bindings:
 {var_bindings}
 
-Reasoning Chain (Step by Step Inference Logic):
+Multi-Step Reasoning Chain:
 {logical_steps}
 
-Instructions:
+**Detailed Instructions:**
 
-1. Create a realistic and varied English scenario that **naturally illustrates all of the above rules together as a multi-step reasoning chain**.
-    - Each time, the scenario must be unique and not be a variation of any other scenario you have previously created.
-    - Include names, roles, places, and specific details that make it concrete.
-    - Avoid repeating themes or sentence structures.
-    - Make sure all facts needed to infer the correct answer are present in the context.
-    - The scenario should involve logical conditions where the variables represent meaningful real-world states.
+**1. SCENARIO CREATION:**
+- Create a realistic scenario within ONE semantic domain (academic, business, legal, medical, or certification)
+- Every variable must play a meaningful role in the scenario
+- The scenario should naturally set up the logical conditions without feeling artificial
+- Include specific names, roles, places, and concrete details
+- Ensure the scenario provides all information needed for the complete reasoning chain
 
-2. Provide four answer choices (A, B, C, D). One must be logically valid given the full chain; others are distractors.
-    - The correct answer must correspond to the **final logical conclusion** derived from the entire rule chain.
-    - Distractors should be plausible but logically invalid based on the given premises.
-    - Include common logical fallacies in distractors (e.g., affirming the consequent, denying the antecedent, incomplete reasoning).
+**2. LOGICAL CHAIN IMPLEMENTATION:**
+- The reasoning must require following ALL steps in the provided logical sequence
+- Each step should build upon previous conclusions
+- No shortcuts should lead to the correct answer
+- The final conclusion should only be reachable through the complete chain
 
-3. The correct answer must be derivable only by combining ALL the given rules in sequence.
+**3. ANSWER CHOICES DESIGN:**
+- Choice A-D must include exactly one logically valid conclusion
+- Include these specific distractor types:
+  * One that represents incomplete reasoning (using only part of the chain)
+  * One that reverses the logical direction (affirming consequent/denying antecedent)
+  * One that introduces unrelated but plausible information
+- All distractors should be tempting but logically invalid
 
-4. Ensure:
-    - The reasoning requires multiple steps following the logical chain.
-    - No shortcuts or single-rule inferences lead to the correct answer.
-    - The context provides all necessary information without ambiguity.
+**4. QUESTION FORMULATION:**
+- Ask what can be "validly concluded" or "logically inferred"
+- Use precise logical language
+- Ensure the question requires deductive rather than inductive reasoning
 
-Your output JSON must have these keys:
+**Output Format - JSON Only:**
 
-* "context": A short, realistic English scenario illustrating the full reasoning chain with concrete details.
-
-* "question": An LSAT-style question asking which inference is valid.
-
-* "answers": An array of four choices: ["A. …", "B. …", "C. …", "D. …"]
-
-* "label": The letter ("A"–"D") of the correct choice.
-
-* "z3": A JSON array of Z3-style expression strings encoding:
-    1. Declaration of Bool symbols,
-    2. All logical relations using Implies, And, Or, etc.
-
-Use Structured Output: wrap all Z3 expressions in a JSON array.
-Use Code Generation style: each item must be a valid Z3 expression string, for example:
-
-```
-"P = Bool('P')"
-"Q = Bool('Q')"
-"Implies(P, Q)"
-```
-
-**Do not include** any extra commentary, narrative, or metadata. Return **only** the JSON object.
-
-Example output format:
 ```json
 {{
-  "context": "Dr. Martinez is evaluating student performance in her advanced chemistry course. The course has specific requirements: students must pass both the midterm exam AND submit their research project to qualify for the final exam. Additionally, students who qualify for the final exam AND achieve a score above 85% will receive department recognition. Furthermore, students with department recognition automatically qualify for the honors program.",
-  "question": "If Sarah passed her midterm exam and submitted her research project, and she scored 87% on her final exam, which of the following can be validly concluded?",
+  "context": "A detailed, realistic scenario that naturally incorporates all variables and sets up the logical relationships. Should be 3-5 sentences establishing the complete situation.",
+
+  "question": "What can be validly concluded from the given information?",
+
   "answers": [
-    "A. Sarah will receive department recognition and qualify for the honors program",
-    "B. Sarah qualified for the final exam but may not receive department recognition",
-    "C. Sarah submitted her research project but did not pass the midterm",
-    "D. Sarah will qualify for the honors program but not receive department recognition"
+    "A. [Correct answer - derivable only through complete reasoning chain]",
+    "B. [Distractor - incomplete reasoning]",
+    "C. [Distractor - reversed logic]",
+    "D. [Distractor - plausible but unrelated]"
   ],
-  "label": "A",
+
+  "label": "[A/B/C/D - letter of correct answer]",
+
   "z3": [
-    "passed_midterm = Bool('passed_midterm')",
-    "submitted_project = Bool('submitted_project')",
-    "qualified_final = Bool('qualified_final')",
-    "scored_above_85 = Bool('scored_above_85')",
-    "dept_recognition = Bool('dept_recognition')",
-    "honors_program = Bool('honors_program')",
-    "Implies(And(passed_midterm, submitted_project), qualified_final)",
-    "Implies(And(qualified_final, scored_above_85), dept_recognition)",
-    "Implies(dept_recognition, honors_program)"
+    "[All variable declarations using semantic names]",
+    "[All logical implications as Z3 expressions]"
   ]
 }}
 ```
+
+**Quality Checklist (ensure all points are met):**
+✓ All variables from the binding list are meaningfully used
+✓ Scenario belongs to a single, coherent semantic domain
+✓ Logical relationships are naturally embedded in the context
+✓ Correct answer requires following the complete reasoning chain
+✓ Distractors represent specific logical fallacies
+✓ Z3 expressions accurately represent the logical structure
+✓ Question tests deductive reasoning skills
+
+**Example of High-Quality Output:**
+
+```json
+{{
+  "context": "At Riverside University, the Computer Science Department has established clear requirements for graduate program admission. Students must complete both the advanced algorithms course AND submit a research proposal to qualify for the candidacy exam. Furthermore, students who pass the candidacy exam AND achieve a GPA above 3.7 are automatically accepted into the PhD program. The department also guarantees that any student accepted into the PhD program will receive full funding for their studies.",
+
+  "question": "If Maria completed the advanced algorithms course, submitted her research proposal, passed her candidacy exam, and achieved a 3.8 GPA, what can be validly concluded?",
+
+  "answers": [
+    "A. Maria will receive full funding for her PhD studies",
+    "B. Maria qualified for the candidacy exam but may not be accepted to the PhD program",
+    "C. Maria completed the course requirements but did not submit a research proposal",
+    "D. Maria will be accepted to the PhD program but funding is not guaranteed"
+  ],
+
+  "label": "A",
+
+  "z3": [
+    "completed_algorithms = Bool('completed_algorithms')",
+    "submitted_proposal = Bool('submitted_proposal')",
+    "qualified_candidacy = Bool('qualified_candidacy')",
+    "passed_exam = Bool('passed_exam')",
+    "gpa_above_37 = Bool('gpa_above_37')",
+    "accepted_phd = Bool('accepted_phd')",
+    "receives_funding = Bool('receives_funding')",
+    "Implies(And(completed_algorithms, submitted_proposal), qualified_candidacy)",
+    "Implies(And(passed_exam, gpa_above_37), accepted_phd)",
+    "Implies(accepted_phd, receives_funding)"
+  ]
+}}
+```
+
+**Remember:** Return ONLY the JSON object. No additional text, explanations, or commentary.
