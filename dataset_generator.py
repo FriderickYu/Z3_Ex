@@ -1,5 +1,5 @@
 # 文件：dataset_generator.py
-# 说明：基于真实逻辑规则的LSAT风格数据集生成器（重构版）
+# 说明：基于真实逻辑规则的LSAT风格数据集生成器
 
 import json
 import logging
@@ -13,24 +13,32 @@ from distractor.generator import DistractorGenerator
 from api_key.llm_dispatcher import LLMDispatcher
 from utils.consistency_validator import ConsistencyValidator
 from utils.enhanced_prompt_builder import EnhancedPromptBuilder
-from utils.safe_variable_extractor import SafeVariableExtractor
+from utils.variable_manager import EnhancedVariableExtractor
 
 
 class DatasetGenerator:
     """
-    改进的数据集生成器：基于真实逻辑规则生成高质量LSAT风格题目
+    改进的数据集生成器：严格控制变量数量，确保高质量的推理题目
     """
 
-    def __init__(self, llm_dispatcher: LLMDispatcher, prompt_template_path: str):
+    def __init__(self, llm_dispatcher: LLMDispatcher, prompt_template_path: str,
+                 max_variables: int = 8, min_variables: int = 4):
         """
         初始化数据集生成器
 
         :param llm_dispatcher: LLM调度器实例
         :param prompt_template_path: prompt模板文件路径
+        :param max_variables: 最大变量数量
+        :param min_variables: 最小变量数量
         """
         self.llm = llm_dispatcher
-        self.logger = logging.getLogger("improved_dataset_generator")
-        self.extractor = SafeVariableExtractor()
+        self.logger = logging.getLogger("dataset_generator")
+
+        # 使用改进的变量提取器（带数量控制）
+        self.extractor = EnhancedVariableExtractor(
+            max_variables=max_variables,
+            min_variables=min_variables
+        )
         self.validator = ConsistencyValidator(strictness_level="medium")
         self.prompt_builder = EnhancedPromptBuilder(prompt_template_path)
 
@@ -39,57 +47,112 @@ class DatasetGenerator:
         self.min_valid_steps = 2
         self.max_valid_steps = 6
 
+        # 变量控制参数
+        self.max_variables = max_variables
+        self.min_variables = min_variables
+
     def _extract_variables_from_dag(self, root_node) -> List[str]:
-        """从DAG中提取所有变量名"""
-        return self.extractor.extract_from_dag(root_node)
+        """从DAG中提取变量（带数量控制）"""
+        try:
+            variables = self.extractor.extract_from_dag(root_node)
+
+            if variables:
+                stats = self.extractor.get_variable_statistics(variables)
+                self.logger.info(f"变量提取统计: {stats['total_count']} 个变量")
+                self.logger.debug(f"详细统计: {stats}")
+
+                # 检查变量数量是否在合理范围内
+                if stats['total_count'] > self.max_variables:
+                    self.logger.warning(f"变量数量过多 ({stats['total_count']} > {self.max_variables})")
+                elif stats['total_count'] < self.min_variables:
+                    self.logger.warning(f"变量数量太少 ({stats['total_count']} < {self.min_variables})")
+                else:
+                    self.logger.info(f"✅ 变量数量合适: {stats['total_count']} 个")
+
+                # 规范化变量名
+                normalized_vars = self.extractor.normalize_variable_names(variables)
+                self.logger.debug(f"提取到变量: {normalized_vars}")
+
+                return normalized_vars
+            else:
+                self.logger.warning("未能从DAG中提取到任何变量")
+                return []
+
+        except Exception as e:
+            self.logger.error(f"变量提取失败: {e}")
+            return []
+
+    def _extract_variables_from_steps(self, logical_steps: List[Dict]) -> List[str]:
+        """从逻辑步骤中提取变量（备用方法，带数量控制）"""
+        try:
+            variables = self.extractor.extract_from_steps(logical_steps)
+            if variables:
+                stats = self.extractor.get_variable_statistics(variables)
+                self.logger.info(f"从步骤中提取 {stats['total_count']} 个变量")
+
+                normalized_vars = self.extractor.normalize_variable_names(variables)
+                self.logger.debug(f"从步骤中提取到变量: {normalized_vars}")
+                return normalized_vars
+            return []
+        except Exception as e:
+            self.logger.error(f"从步骤提取变量失败: {e}")
+            return []
 
     def _generate_semantic_bindings(self, variables: List[str]) -> Dict[str, str]:
-        """为变量生成语义绑定，确保语义域一致性"""
+        """
+        为变量生成增强的语义绑定，确保语义域一致性
+        特别针对变量数量控制后的情况优化
+        """
 
-        # 扩展的语义域，每个域都包含完整的逻辑场景
+        # 扩展的语义域，提供更多高质量的语义术语
         semantic_domains = {
             "academic_evaluation": {
                 "domain_name": "学术评估",
                 "variables": [
-                    "passed_midterm_exam", "submitted_research_paper", "attended_seminars",
-                    "completed_assignments", "received_recommendation", "qualified_for_thesis",
-                    "defended_thesis", "earned_degree", "published_paper", "won_scholarship"
+                    "completed_coursework", "passed_examinations", "submitted_thesis",
+                    "attended_seminars", "received_approval", "qualified_for_degree",
+                    "defended_research", "earned_certification", "published_work",
+                    "won_recognition", "met_requirements", "achieved_standards"
                 ],
                 "context_template": "学术评估系统中的学生表现评价"
             },
             "business_workflow": {
                 "domain_name": "商业流程",
                 "variables": [
-                    "project_approved", "budget_allocated", "team_assembled",
-                    "milestone_completed", "client_satisfied", "contract_signed",
-                    "payment_received", "quality_assured", "deadline_met", "profit_achieved"
+                    "project_initiated", "budget_approved", "team_assembled",
+                    "milestone_achieved", "client_satisfied", "contract_finalized",
+                    "payment_processed", "quality_verified", "deadline_met",
+                    "profit_realized", "objectives_completed", "standards_exceeded"
                 ],
                 "context_template": "企业项目管理和业务流程"
             },
             "legal_procedure": {
                 "domain_name": "法律程序",
                 "variables": [
-                    "evidence_submitted", "witness_testified", "case_filed",
-                    "hearing_scheduled", "motion_granted", "settlement_reached",
-                    "judgment_rendered", "appeal_filed", "precedent_cited", "verdict_delivered"
+                    "evidence_presented", "witness_examined", "case_documented",
+                    "hearing_conducted", "motion_approved", "settlement_negotiated",
+                    "judgment_issued", "appeal_processed", "precedent_established",
+                    "verdict_finalized", "ruling_upheld", "procedure_followed"
                 ],
                 "context_template": "法律诉讼程序和案件处理"
             },
             "medical_diagnosis": {
                 "domain_name": "医疗诊断",
                 "variables": [
-                    "symptoms_observed", "tests_conducted", "results_analyzed",
-                    "diagnosis_confirmed", "treatment_prescribed", "patient_responded",
-                    "recovery_noted", "followup_scheduled", "clearance_given", "discharge_approved"
+                    "symptoms_documented", "tests_performed", "results_interpreted",
+                    "diagnosis_established", "treatment_prescribed", "patient_improved",
+                    "recovery_achieved", "followup_completed", "clearance_obtained",
+                    "discharge_authorized", "medication_effective", "vitals_stable"
                 ],
                 "context_template": "医疗诊断和治疗流程"
             },
             "certification_process": {
                 "domain_name": "认证流程",
                 "variables": [
-                    "training_completed", "exam_passed", "experience_verified",
-                    "application_submitted", "review_conducted", "interview_passed",
-                    "certification_granted", "license_issued", "renewal_required", "compliance_met"
+                    "training_finished", "examination_passed", "experience_documented",
+                    "application_processed", "review_completed", "interview_cleared",
+                    "certification_awarded", "license_granted", "renewal_scheduled",
+                    "compliance_verified", "standards_met", "credentials_validated"
                 ],
                 "context_template": "专业认证和资质获取流程"
             }
@@ -104,19 +167,26 @@ class DatasetGenerator:
         bindings = {}
         domain_vars = domain["variables"]
 
-        # 为每个变量分配语义绑定
-        for i, var in enumerate(variables[:len(domain_vars)]):
-            bindings[var] = domain_vars[i]
-
-        # 如果变量太多，使用通用命名
-        if len(variables) > len(domain_vars):
-            for i, var in enumerate(variables[len(domain_vars):], 1):
-                bindings[var] = f"{domain['domain_name']}_additional_condition_{i}"
+        # 为每个变量分配语义绑定（现在变量数量已控制在合理范围内）
+        for i, var in enumerate(variables):
+            if i < len(domain_vars):
+                # 直接使用域内的语义术语
+                bindings[var] = domain_vars[i]
+            else:
+                # 如果变量数量超过域内术语，使用更具体的命名而不是通用格式
+                extra_terms = [
+                    f"additional_{domain['domain_name'].lower()}_requirement",
+                    f"supplementary_{domain['domain_name'].lower()}_condition",
+                    f"extended_{domain['domain_name'].lower()}_criterion",
+                    f"further_{domain['domain_name'].lower()}_standard"
+                ]
+                extra_index = (i - len(domain_vars)) % len(extra_terms)
+                bindings[var] = f"{extra_terms[extra_index]}_{i - len(domain_vars) + 1}"
 
         return bindings
 
-    def _format_z3_expressions_improved(self, logical_steps: List[Dict], var_bindings: Dict[str, str]) -> List[str]:
-        """改进的Z3表达式格式化"""
+    def _format_z3_expressions(self, logical_steps: List[Dict], var_bindings: Dict[str, str]) -> List[str]:
+        """改进的Z3表达式格式化（优化变量数量控制后的情况）"""
         z3_exprs = []
 
         try:
@@ -124,7 +194,9 @@ class DatasetGenerator:
             for var, semantic in var_bindings.items():
                 z3_exprs.append(f"{semantic} = Bool('{semantic}')")
 
-            # 2. 规则表达式（改进错误处理）
+            # 2. 规则表达式（优化处理）
+            processed_expressions = set()  # 避免重复表达式
+
             for step in logical_steps:
                 try:
                     premises_expr = step.get('premises_expr', [])
@@ -138,8 +210,8 @@ class DatasetGenerator:
                     premise_strs = []
                     for premise in premises_expr:
                         try:
-                            # 将Z3变量名替换为语义名
                             premise_str = str(premise)
+                            # 替换变量名为语义名
                             for var, semantic in var_bindings.items():
                                 premise_str = premise_str.replace(var, semantic)
                             premise_strs.append(premise_str)
@@ -161,10 +233,15 @@ class DatasetGenerator:
 
                     # 构造蕴含关系
                     if len(premise_strs) == 1:
-                        z3_exprs.append(f"Implies({premise_strs[0]}, {conclusion_str})")
+                        implication = f"Implies({premise_strs[0]}, {conclusion_str})"
                     else:
                         premises_conjunction = f"And({', '.join(premise_strs)})"
-                        z3_exprs.append(f"Implies({premises_conjunction}, {conclusion_str})")
+                        implication = f"Implies({premises_conjunction}, {conclusion_str})"
+
+                    # 避免重复和恒等式
+                    if implication not in processed_expressions and not self._is_tautology(implication):
+                        z3_exprs.append(implication)
+                        processed_expressions.add(implication)
 
                 except Exception as e:
                     self.logger.debug(f"处理逻辑步骤时出错: {e}")
@@ -175,15 +252,39 @@ class DatasetGenerator:
 
         return z3_exprs
 
-    def _create_enhanced_distractors(self, logical_steps: List[Dict], var_bindings: Dict[str, str]) -> List[str]:
-        """创建增强的干扰项"""
+    def _is_tautology(self, implication: str) -> bool:
+        """检测是否为恒等式"""
+        try:
+            # 简单的恒等式检测
+            if "Implies(" in implication and implication.count(",") >= 1:
+                # 提取前提和结论部分
+                start = implication.find("Implies(") + 8
+                parts = implication[start:-1].split(", ", 1)
+                if len(parts) == 2:
+                    premise_part = parts[0].strip()
+                    conclusion_part = parts[1].strip()
+
+                    # 检查是否为 A -> A 或 A∧B∧C -> A 类型的恒等式
+                    if premise_part == conclusion_part:
+                        return True
+
+                    # 检查 And(A,B,C) -> A 类型的恒等式
+                    if premise_part.startswith("And(") and conclusion_part in premise_part:
+                        return True
+
+            return False
+        except:
+            return False
+
+    def _create_distractors(self, logical_steps: List[Dict], var_bindings: Dict[str, str]) -> List[str]:
+        """创建增强的干扰项（适配变量数量控制）"""
         try:
             # 创建安全的布尔变量
             var_names = list(var_bindings.keys())
             safe_vars = self.extractor.create_safe_bool_vars(var_names)
 
             if not safe_vars:
-                self.logger.warning("无法创建有效的布尔变量，跳过干扰项生成")
+                self.logger.warning("无法创建有效的布尔变量，使用回退干扰项")
                 return self._create_fallback_distractors()
 
             # 生成干扰项
@@ -215,10 +316,10 @@ class DatasetGenerator:
         ]
 
     def generate_single_sample(self, max_depth: int = 3) -> Optional[Dict[str, Any]]:
-        """生成单个数据样本（支持任意长度链条）"""
+        """生成单个数据样本（严格控制变量数量）"""
         for attempt in range(self.max_retry_attempts):
             try:
-                # 1. 构建推理DAG（自动选择短链条或长链条）
+                # 1. 构建推理DAG
                 self.logger.info(f"构建推理DAG，深度={max_depth}，尝试{attempt + 1}")
                 root, logical_steps = build_reasoning_dag(max_depth=max_depth, min_depth=max(max_depth // 3, 2))
 
@@ -238,18 +339,33 @@ class DatasetGenerator:
 
                 self.logger.info(f"成功验证 {len(valid_steps)} 个逻辑步骤")
 
-                # 3. 提取变量和生成语义绑定
+                # 3. 提取变量和生成语义绑定（严格控制数量）
                 variables = self._extract_variables_from_dag(root)
+
+                # 如果DAG提取失败，尝试从步骤中提取
+                if not variables:
+                    self.logger.info("尝试从逻辑步骤中提取变量...")
+                    variables = self._extract_variables_from_steps(valid_steps)
+
                 if not variables:
                     self.logger.warning("未能提取到变量，重试")
                     continue
 
+                # 再次检查变量数量
+                if len(variables) > self.max_variables:
+                    self.logger.warning(f"变量数量仍然过多 ({len(variables)} > {self.max_variables})，重试")
+                    continue
+
+                if len(variables) < self.min_variables:
+                    self.logger.warning(f"变量数量太少 ({len(variables)} < {self.min_variables})，重试")
+                    continue
+
                 var_bindings = self._generate_semantic_bindings(variables)
-                self.logger.info(f"生成 {len(var_bindings)} 个变量绑定")
+                self.logger.info(f"✅ 生成 {len(var_bindings)} 个变量绑定（在合理范围内）")
 
                 # 4. 构建增强prompt
                 enhanced_prompt = self.prompt_builder.build_constrained_prompt(
-                    z3_exprs=self._format_z3_expressions_improved(valid_steps, var_bindings),
+                    z3_exprs=self._format_z3_expressions(valid_steps, var_bindings),
                     var_bindings=var_bindings,
                     logical_steps=valid_steps,
                     previous_violations=[]
@@ -264,7 +380,7 @@ class DatasetGenerator:
                     continue
 
                 # 6. 解析响应
-                sample = self._parse_llm_response_improved(response, valid_steps, var_bindings)
+                sample = self._parse_llm_response(response, valid_steps, var_bindings)
                 if not sample:
                     self.logger.error("响应解析失败，重试")
                     continue
@@ -274,13 +390,13 @@ class DatasetGenerator:
 
                 if is_valid:
                     self.logger.info("✅ 样本通过质量验证")
-                    return self._add_enhanced_metadata(sample, valid_steps, var_bindings)
+                    return self._add_metadata(sample, valid_steps, var_bindings)
                 else:
                     self.logger.warning(f"⚠️ 质量验证失败: {violations}")
                     # 在最后一次尝试时，返回部分合格的样本
                     if attempt == self.max_retry_attempts - 1:
                         sample['validation_warnings'] = violations
-                        return self._add_enhanced_metadata(sample, valid_steps, var_bindings)
+                        return self._add_metadata(sample, valid_steps, var_bindings)
 
             except Exception as e:
                 self.logger.error(f"生成样本时出错 (尝试 {attempt + 1}): {e}")
@@ -289,7 +405,7 @@ class DatasetGenerator:
         self.logger.error("所有重试都失败")
         return None
 
-    def _parse_llm_response_improved(self, response: str, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> \
+    def _parse_llm_response(self, response: str, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> \
     Optional[Dict]:
         """改进的LLM响应解析"""
         try:
@@ -343,7 +459,7 @@ class DatasetGenerator:
         except:
             return None
 
-    def _add_enhanced_metadata(self, sample: Dict, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> Dict:
+    def _add_metadata(self, sample: Dict, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> Dict:
         """添加增强的元数据"""
         sample['metadata'] = {
             'reasoning_depth': len(valid_steps),
@@ -351,7 +467,14 @@ class DatasetGenerator:
             'rules_used': [step.get('rule', 'Unknown') for step in valid_steps],
             'semantic_domain': self._infer_semantic_domain(var_bindings),
             'logical_complexity': self._calculate_complexity(valid_steps),
-            'generation_version': 'improved_v2'
+            'generation_version': 'variable_controlled_v1',
+            'variable_extraction_method': 'enhanced_extractor_with_control',
+            'variable_control': {
+                'max_variables': self.max_variables,
+                'min_variables': self.min_variables,
+                'actual_variables': len(var_bindings),
+                'within_limits': self.min_variables <= len(var_bindings) <= self.max_variables
+            }
         }
 
         # 添加质量分数
@@ -364,11 +487,11 @@ class DatasetGenerator:
         all_bindings = " ".join(var_bindings.values()).lower()
 
         domain_keywords = {
-            "academic": ["exam", "assignment", "grade", "course", "student"],
-            "business": ["project", "budget", "client", "contract", "profit"],
-            "legal": ["evidence", "witness", "case", "court", "judgment"],
-            "medical": ["diagnosis", "treatment", "patient", "symptoms"],
-            "certification": ["training", "certification", "license", "compliance"]
+            "academic": ["coursework", "examination", "thesis", "seminar", "degree", "research"],
+            "business": ["project", "budget", "team", "milestone", "client", "contract"],
+            "legal": ["evidence", "witness", "case", "hearing", "motion", "settlement"],
+            "medical": ["symptoms", "tests", "diagnosis", "treatment", "patient", "recovery"],
+            "certification": ["training", "examination", "experience", "application", "certification"]
         }
 
         for domain, keywords in domain_keywords.items():
@@ -403,21 +526,23 @@ class DatasetGenerator:
         depth = sample.get('metadata', {}).get('reasoning_depth', 0)
         score += min(depth / 6, 0.2)  # 最多0.2分
 
-        # 变量使用
-        var_count = sample.get('metadata', {}).get('variables_count', 0)
-        score += min(var_count / 8, 0.2)  # 最多0.2分
+        # 变量使用（现在更重要了）
+        var_control = sample.get('metadata', {}).get('variable_control', {})
+        if var_control.get('within_limits', False):
+            score += 0.2  # 变量数量在合理范围内
 
         return min(score, 1.0)
 
-    def generate_dataset(self, num_samples: int, output_path: str, max_depth_range: tuple = (5, 12)) -> None:
-        """生成完整数据集（改进版）"""
-        self.logger.info(f"开始生成 {num_samples} 个样本的改进数据集")
+    def generate_dataset(self, num_samples: int, output_path: str, max_depth_range: tuple = (5, 8)) -> None:
+        """生成完整数据集（变量数量控制版）"""
+        self.logger.info(
+            f"开始生成 {num_samples} 个样本的数据集（变量数量控制: {self.min_variables}-{self.max_variables}）")
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         successful_samples = []
         attempts = 0
-        max_attempts = num_samples * 4  # 增加最大尝试次数
+        max_attempts = num_samples * 4
 
         # 统计信息
         stats = {
@@ -426,13 +551,20 @@ class DatasetGenerator:
             "failed": 0,
             "quality_scores": [],
             "semantic_domains": {},
-            "complexity_levels": {}
+            "complexity_levels": {},
+            "variable_control_stats": {
+                "avg_variables": 0,
+                "within_limits_count": 0,
+                "over_limit_count": 0,
+                "under_limit_count": 0
+            }
         }
 
         while len(successful_samples) < num_samples and attempts < max_attempts:
             attempts += 1
             stats["total_attempts"] += 1
 
+            # 对于变量数量控制，适当降低深度范围
             depth = random.randint(*max_depth_range)
 
             self.logger.info(f"生成样本 {len(successful_samples) + 1}/{num_samples} (尝试 {attempts})")
@@ -453,10 +585,27 @@ class DatasetGenerator:
                 complexity = sample.get('metadata', {}).get('logical_complexity', 'unknown')
                 stats["complexity_levels"][complexity] = stats["complexity_levels"].get(complexity, 0) + 1
 
-                self.logger.info(f"✅ 成功生成样本 {len(successful_samples)} (质量分数: {quality_score:.2f})")
+                # 变量控制统计
+                var_control = sample.get('metadata', {}).get('variable_control', {})
+                actual_vars = var_control.get('actual_variables', 0)
+                stats["variable_control_stats"]["avg_variables"] += actual_vars
+
+                if var_control.get('within_limits', False):
+                    stats["variable_control_stats"]["within_limits_count"] += 1
+                elif actual_vars > self.max_variables:
+                    stats["variable_control_stats"]["over_limit_count"] += 1
+                else:
+                    stats["variable_control_stats"]["under_limit_count"] += 1
+
+                self.logger.info(
+                    f"✅ 成功生成样本 {len(successful_samples)} (质量分数: {quality_score:.2f}, 变量: {actual_vars})")
             else:
                 stats["failed"] += 1
                 self.logger.warning(f"❌ 样本生成失败 (尝试 {attempts})")
+
+        # 计算平均变量数量
+        if stats["successful"] > 0:
+            stats["variable_control_stats"]["avg_variables"] /= stats["successful"]
 
         # 保存数据集
         self._save_dataset_with_stats(successful_samples, stats, output_path)
@@ -484,17 +633,27 @@ class DatasetGenerator:
         success_rate = stats["successful"] / stats["total_attempts"] * 100 if stats["total_attempts"] > 0 else 0
         avg_quality = sum(stats["quality_scores"]) / len(stats["quality_scores"]) if stats["quality_scores"] else 0
 
-        self.logger.info("=" * 50)
-        self.logger.info("📊 数据集生成统计")
+        self.logger.info("=" * 60)
+        self.logger.info("📊 数据集生成统计（变量数量控制版）")
         self.logger.info(f"成功率: {success_rate:.1f}% ({stats['successful']}/{stats['total_attempts']})")
         self.logger.info(f"平均质量分数: {avg_quality:.3f}")
         self.logger.info(f"语义域分布: {stats['semantic_domains']}")
         self.logger.info(f"复杂度分布: {stats['complexity_levels']}")
-        self.logger.info("=" * 50)
+
+        # 变量控制统计
+        var_stats = stats["variable_control_stats"]
+        self.logger.info("🎯 变量控制统计:")
+        self.logger.info(f"  平均变量数量: {var_stats['avg_variables']:.1f}")
+        self.logger.info(f"  范围内样本: {var_stats['within_limits_count']}")
+        self.logger.info(f"  超出上限: {var_stats['over_limit_count']}")
+        self.logger.info(f"  低于下限: {var_stats['under_limit_count']}")
+        self.logger.info(f"  目标范围: {self.min_variables}-{self.max_variables}")
+
+        self.logger.info("=" * 60)
 
 
 def main():
-    """主函数示例"""
+    """主函数示例（变量数量控制版）"""
     # 配置日志
     logging.basicConfig(
         level=logging.INFO,
@@ -508,17 +667,19 @@ def main():
         retries=3
     )
 
-    # 初始化改进的数据集生成器
+    # 初始化变量数量控制的数据集生成器
     generator = DatasetGenerator(
         llm_dispatcher=llm,
-        prompt_template_path="prompt/lsat_prompt.txt"
+        prompt_template_path="prompt/lsat_prompt.txt",
+        max_variables=10,  # 最大8个变量
+        min_variables=3  # 最小4个变量
     )
 
-    # 生成数据集
+    # 生成数据集（降低深度范围以配合变量控制）
     generator.generate_dataset(
         num_samples=1,
-        output_path="output/unified_lsat_dataset.jsonl",
-        max_depth_range=(2, 5)  # 支持6-12步的推理链
+        output_path="output/controlled_lsat_dataset_v2.jsonl",
+        max_depth_range=(6, 15)  # 降低深度范围
     )
 
 

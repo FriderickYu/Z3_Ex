@@ -1,5 +1,5 @@
-# 文件：dag/dag_builder.py
-# 说明：构建支持多规则组合的逻辑推理 DAG，支持短链条和长链条
+# 文件：dag/dag_builder.py（更新版）
+# 说明：构建支持多规则组合的逻辑推理 DAG，使用统一变量命名系统
 
 import random
 import logging
@@ -9,32 +9,29 @@ from typing import List, Dict, Optional, Tuple
 
 import z3
 from rules.rules_pool import rule_pool
+from utils.variable_manager import variable_manager, EnhancedVariableExtractor
 
 
 class DAGNode:
     def __init__(self, z3_expr, rule=None, rule_name=None, depth=0):
-        self.z3_expr = z3_expr  # 当前节点对应的 Z3 表达式
-        self.rule = rule  # 当前节点是由哪个规则生成的
-        self.rule_name = rule_name or (rule.name if rule else None)  # 规则名称
-        self.children = []  # 子节点（前提）
-        self.depth = depth  # 节点深度
+        self.z3_expr = z3_expr
+        self.rule = rule
+        self.rule_name = rule_name or (rule.name if rule else None)
+        self.children = []
+        self.depth = depth
 
     def add_child(self, child_node):
         self.children.append(child_node)
 
 
 class ShortChainDAGBuilder:
-    """
-    短链条DAG构建器（2-5步）：使用递归方式
-    """
+    """短链条DAG构建器（2-5步）：使用统一变量命名"""
 
     def __init__(self, max_depth=5, min_depth=2):
         self.max_depth = max_depth
         self.min_depth = min_depth
         self.node_counter = 0
         self.logger = logging.getLogger("short_chain_dag_builder")
-        self.used_variables = set()
-        self.variable_counter = 0
         self.processing_expressions = set()
         self.max_recursion_depth = 6
         self.current_recursion_depth = 0
@@ -44,7 +41,8 @@ class ShortChainDAGBuilder:
         try:
             self.logger.info(f"构建短推理链，深度范围: {self.min_depth}-{self.max_depth}")
 
-            # 重置状态
+            # 重置变量管理器
+            variable_manager.reset()
             self._reset_state()
 
             # 选择最终规则
@@ -74,8 +72,6 @@ class ShortChainDAGBuilder:
 
     def _reset_state(self):
         """重置构建状态"""
-        self.used_variables.clear()
-        self.variable_counter = 0
         self.processing_expressions.clear()
         self.current_recursion_depth = 0
 
@@ -99,10 +95,10 @@ class ShortChainDAGBuilder:
         try:
             num_final_premises = final_rule.num_premises()
 
-            # 创建最终前提变量
+            # 创建最终前提变量（使用统一命名）
             final_premises = []
             for i in range(num_final_premises):
-                var = self._create_new_variable("Goal")
+                var = variable_manager.create_variable("Goal")
                 final_premises.append(var)
 
             # 构造最终结论
@@ -110,7 +106,7 @@ class ShortChainDAGBuilder:
                 final_conclusion = final_rule.construct_conclusion(final_premises)
             except Exception as e:
                 self.logger.debug(f"构造最终结论失败: {e}")
-                final_conclusion = self._create_new_variable("FinalConclusion")
+                final_conclusion = variable_manager.create_variable("FinalConclusion")
 
             # 创建根节点
             root = DAGNode(final_conclusion, final_rule, final_rule.name, 0)
@@ -152,8 +148,10 @@ class ShortChainDAGBuilder:
             try:
                 sub_premises = rule.generate_premises(target_premise)
             except Exception:
-                sub_premises = [self._create_new_variable("SubPremise")
-                                for _ in range(rule.num_premises())]
+                # 使用统一变量命名创建前提
+                sub_premises = []
+                for _ in range(rule.num_premises()):
+                    sub_premises.append(variable_manager.create_variable("SubPremise"))
 
             # 限制子前提数量
             if len(sub_premises) > 3:
@@ -213,16 +211,6 @@ class ShortChainDAGBuilder:
         except Exception:
             return True
 
-    def _create_new_variable(self, prefix="Var"):
-        """创建新变量"""
-        while True:
-            var_name = f"{prefix}_{self.variable_counter}"
-            self.variable_counter += 1
-
-            if var_name not in self.used_variables:
-                self.used_variables.add(var_name)
-                return z3.Bool(var_name)
-
     def _calculate_depth(self, node):
         """计算DAG深度"""
         if not node.children:
@@ -235,10 +223,9 @@ class ShortChainDAGBuilder:
         self.logger.info("使用简单回退方案")
 
         try:
-            premise = z3.Bool(f"Fallback_P_{self.variable_counter}")
-            self.variable_counter += 1
-            conclusion = z3.Bool(f"Fallback_Q_{self.variable_counter}")
-            self.variable_counter += 1
+            # 使用统一变量命名
+            premise = variable_manager.create_variable("FallbackP")
+            conclusion = variable_manager.create_variable("FallbackQ")
 
             from rules.modus_ponens import ModusPonensRule
             rule = ModusPonensRule()
@@ -256,25 +243,25 @@ class ShortChainDAGBuilder:
 
         except Exception as e:
             self.logger.error(f"回退方案失败: {e}")
-            var = z3.Bool("Emergency_Var")
+            var = variable_manager.create_variable("Emergency")
             return DAGNode(var)
 
 
 class LongChainDAGBuilder:
-    """
-    长链条DAG构建器（5+步）：使用迭代方式
-    """
+    """长链条DAG构建器（5+步）：使用统一变量命名"""
 
     def __init__(self, max_depth=15, min_depth=5):
         self.max_depth = max_depth
         self.min_depth = min_depth
         self.logger = logging.getLogger("long_chain_dag_builder")
-        self.variable_counter = 0
         self.used_expressions = set()
 
     def build_long_chain(self) -> Optional[DAGNode]:
         """构建长逻辑链条"""
         try:
+            # 重置变量管理器
+            variable_manager.reset()
+
             target_depth = random.randint(self.min_depth, self.max_depth)
             self.logger.info(f"构建长逻辑链，目标深度: {target_depth}")
 
@@ -299,7 +286,7 @@ class LongChainDAGBuilder:
     def _build_linear_chain(self, target_depth: int) -> List[Dict]:
         """构建线性逻辑链条"""
         chain = []
-        current_conclusion = self._create_variable("FinalConclusion")
+        current_conclusion = variable_manager.create_variable("FinalConclusion")
 
         for step in range(target_depth):
             rule = self._select_rule_for_step(step, target_depth)
@@ -355,19 +342,19 @@ class LongChainDAGBuilder:
                 if premises and len(premises) <= 4:
                     return premises
 
-            # 回退：生成新前提变量
+            # 回退：使用统一变量命名生成新前提
             num_premises = min(rule.num_premises(), 3)
             premises = []
 
             for i in range(num_premises):
-                var = self._create_variable(f"Step{step}_Premise{i}")
+                var = variable_manager.create_variable(f"Step{step}_Premise{i}")
                 premises.append(var)
 
             return premises
 
         except Exception as e:
             self.logger.debug(f"生成前提失败: {e}")
-            return [self._create_variable(f"Step{step}_SimplePremise")]
+            return [variable_manager.create_variable(f"Step{step}_SimplePremise")]
 
     def _select_next_conclusion(self, premises: List[z3.ExprRef]) -> z3.ExprRef:
         """选择下一个结论"""
@@ -433,21 +420,9 @@ class LongChainDAGBuilder:
 
         return self._create_simple_node()
 
-    def _create_variable(self, name: str) -> z3.ExprRef:
-        """创建唯一变量"""
-        var_name = f"{name}_{self.variable_counter}"
-        self.variable_counter += 1
-
-        while var_name in self.used_expressions:
-            self.variable_counter += 1
-            var_name = f"{name}_{self.variable_counter}"
-
-        self.used_expressions.add(var_name)
-        return z3.Bool(var_name)
-
     def _create_simple_node(self) -> DAGNode:
         """创建简单节点"""
-        var = self._create_variable("Simple")
+        var = variable_manager.create_variable("Simple")
         return DAGNode(var)
 
     def _build_fallback_chain(self) -> DAGNode:
@@ -455,9 +430,10 @@ class LongChainDAGBuilder:
         self.logger.info("使用回退方案构建短链条")
 
         try:
-            p = self._create_variable("FallbackP")
-            q = self._create_variable("FallbackQ")
-            r = self._create_variable("FallbackR")
+            # 使用统一变量命名
+            p = variable_manager.create_variable("FallbackP")
+            q = variable_manager.create_variable("FallbackQ")
+            r = variable_manager.create_variable("FallbackR")
 
             from rules.hypothetical_syllogism import HypotheticalSyllogismRule
             rule = HypotheticalSyllogismRule()
@@ -490,7 +466,7 @@ class LongChainDAGBuilder:
 
 def extract_logical_steps(root_node: DAGNode) -> List[Dict]:
     """
-    迭代式提取逻辑步骤，避免递归深度限制
+    迭代式提取逻辑步骤，使用增强的变量提取器
     """
     steps = []
     visited = set()
@@ -565,14 +541,7 @@ def _get_rule_type(rule_name):
 def build_reasoning_dag(max_depth=5, min_depth=2) -> Tuple[Optional[DAGNode], List[Dict]]:
     """
     构建推理DAG的统一接口
-    根据深度自动选择短链条或长链条构建器
-
-    Args:
-        max_depth: 最大推理深度
-        min_depth: 最小推理深度
-
-    Returns:
-        (root_node, logical_steps)
+    使用统一变量命名系统
     """
     try:
         if max_depth <= 5:
