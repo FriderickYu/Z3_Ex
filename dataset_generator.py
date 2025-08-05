@@ -1,14 +1,16 @@
 # 文件：dataset_generator.py
-# 说明：基于真实逻辑规则的LSAT风格数据集生成器
+# 说明：基于真实逻辑规则的LSAT风格数据集生成器（集成matplotlib可视化）
 
 import json
 import logging
 import random
+import os
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 from dag.dag_builder import build_reasoning_dag
 from dag.validator import validate_logical_steps
+from dag.visualizer import visualize_dag
 from distractor.generator import DistractorGenerator
 from api_key.llm_dispatcher import LLMDispatcher
 from utils.consistency_validator import ConsistencyValidator
@@ -19,10 +21,12 @@ from utils.variable_manager import EnhancedVariableExtractor
 class DatasetGenerator:
     """
     改进的数据集生成器：严格控制变量数量，确保高质量的推理题目
+    集成：matplotlib + networkx 可视化，无外部依赖
     """
 
     def __init__(self, llm_dispatcher: LLMDispatcher, prompt_template_path: str,
-                 max_variables: int = 8, min_variables: int = 4):
+                 max_variables: int = 8, min_variables: int = 4,
+                 enable_visualization: bool = True, viz_output_dir: str = "output/dag_visualizations"):
         """
         初始化数据集生成器
 
@@ -30,6 +34,8 @@ class DatasetGenerator:
         :param prompt_template_path: prompt模板文件路径
         :param max_variables: 最大变量数量
         :param min_variables: 最小变量数量
+        :param enable_visualization: 是否启用可视化
+        :param viz_output_dir: 可视化图片输出目录
         """
         self.llm = llm_dispatcher
         self.logger = logging.getLogger("dataset_generator")
@@ -50,6 +56,51 @@ class DatasetGenerator:
         # 变量控制参数
         self.max_variables = max_variables
         self.min_variables = min_variables
+
+        # 可视化参数
+        self.enable_visualization = enable_visualization
+        self.viz_output_dir = viz_output_dir
+
+        # 创建可视化输出目录
+        if self.enable_visualization:
+            Path(self.viz_output_dir).mkdir(parents=True, exist_ok=True)
+            self.logger.info(f"✅ 可视化功能已启用，输出目录: {self.viz_output_dir}")
+
+    def _generate_dag_visualization(self, root_node, sample_id: str, metadata: Dict = None) -> Optional[str]:
+        """
+        为DAG生成可视化图片
+
+        :param root_node: DAG根节点
+        :param sample_id: 样本唯一标识
+        :param metadata: 样本元数据（用于文件命名）
+        :return: 生成的图片文件路径，失败时返回None
+        """
+        if not self.enable_visualization or root_node is None:
+            return None
+
+        try:
+            # 构造文件名
+            if metadata:
+                depth = metadata.get('reasoning_depth', 0)
+                var_count = metadata.get('variables_count', 0)
+                filename = f"dag_sample_{sample_id}_depth{depth}_vars{var_count}"
+            else:
+                filename = f"dag_sample_{sample_id}"
+
+            # 完整输出路径（不包含扩展名，visualize_dag会自动添加）
+            output_path = os.path.join(self.viz_output_dir, filename)
+
+            # 调用可视化函数（使用现代风格）
+            visualize_dag(root_node, filename=output_path, format="png", style="modern")
+
+            final_path = f"{output_path}.png"
+            self.logger.info(f"🎨 DAG可视化已生成: {final_path}")
+
+            return final_path
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ 生成DAG可视化失败: {e}")
+            return None
 
     def _extract_variables_from_dag(self, root_node) -> List[str]:
         """从DAG中提取变量（带数量控制）"""
@@ -315,8 +366,18 @@ class DatasetGenerator:
             "无关条件的干扰性推断"
         ]
 
-    def generate_single_sample(self, max_depth: int = 3) -> Optional[Dict[str, Any]]:
-        """生成单个数据样本（严格控制变量数量）"""
+    def generate_single_sample(self, max_depth: int = 3, sample_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        生成单个数据样本（严格控制变量数量 + 集成可视化）
+
+        :param max_depth: 最大推理深度
+        :param sample_id: 样本唯一标识符（用于文件命名）
+        :return: 生成的样本数据
+        """
+        # 如果没有提供sample_id，自动生成
+        if sample_id is None:
+            sample_id = f"{random.randint(10000, 99999)}"
+
         for attempt in range(self.max_retry_attempts):
             try:
                 # 1. 构建推理DAG
@@ -390,13 +451,41 @@ class DatasetGenerator:
 
                 if is_valid:
                     self.logger.info("✅ 样本通过质量验证")
-                    return self._add_metadata(sample, valid_steps, var_bindings)
+
+                    # 8. 添加元数据
+                    final_sample = self._add_metadata(sample, valid_steps, var_bindings)
+
+                    # 9. 🎨 生成DAG可视化图片
+                    if root is not None:
+                        viz_path = self._generate_dag_visualization(
+                            root_node=root,
+                            sample_id=sample_id,
+                            metadata=final_sample.get('metadata', {})
+                        )
+
+                        # 将可视化路径添加到样本数据中
+                        if viz_path:
+                            final_sample['visualization_path'] = viz_path
+
+                    return final_sample
                 else:
                     self.logger.warning(f"⚠️ 质量验证失败: {violations}")
                     # 在最后一次尝试时，返回部分合格的样本
                     if attempt == self.max_retry_attempts - 1:
                         sample['validation_warnings'] = violations
-                        return self._add_metadata(sample, valid_steps, var_bindings)
+                        final_sample = self._add_metadata(sample, valid_steps, var_bindings)
+
+                        # 即使验证失败，也生成可视化
+                        if root is not None:
+                            viz_path = self._generate_dag_visualization(
+                                root_node=root,
+                                sample_id=f"{sample_id}_partial",
+                                metadata=final_sample.get('metadata', {})
+                            )
+                            if viz_path:
+                                final_sample['visualization_path'] = viz_path
+
+                        return final_sample
 
             except Exception as e:
                 self.logger.error(f"生成样本时出错 (尝试 {attempt + 1}): {e}")
@@ -406,7 +495,7 @@ class DatasetGenerator:
         return None
 
     def _parse_llm_response(self, response: str, valid_steps: List[Dict], var_bindings: Dict[str, str]) -> \
-    Optional[Dict]:
+            Optional[Dict]:
         """改进的LLM响应解析"""
         try:
             # 提取JSON部分
@@ -467,14 +556,15 @@ class DatasetGenerator:
             'rules_used': [step.get('rule', 'Unknown') for step in valid_steps],
             'semantic_domain': self._infer_semantic_domain(var_bindings),
             'logical_complexity': self._calculate_complexity(valid_steps),
-            'generation_version': 'variable_controlled_v1',
+            'generation_version': 'variable_controlled_v2_with_matplotlib_viz',
             'variable_extraction_method': 'enhanced_extractor_with_control',
             'variable_control': {
                 'max_variables': self.max_variables,
                 'min_variables': self.min_variables,
                 'actual_variables': len(var_bindings),
                 'within_limits': self.min_variables <= len(var_bindings) <= self.max_variables
-            }
+            },
+            'visualization_enabled': self.enable_visualization
         }
 
         # 添加质量分数
@@ -534,9 +624,16 @@ class DatasetGenerator:
         return min(score, 1.0)
 
     def generate_dataset(self, num_samples: int, output_path: str, max_depth_range: tuple = (5, 8)) -> None:
-        """生成完整数据集（变量数量控制版）"""
+        """
+        生成完整数据集（变量数量控制版 + matplotlib可视化）
+
+        :param num_samples: 生成样本数量
+        :param output_path: 数据集输出路径
+        :param max_depth_range: 推理深度范围
+        """
         self.logger.info(
             f"开始生成 {num_samples} 个样本的数据集（变量数量控制: {self.min_variables}-{self.max_variables}）")
+        self.logger.info(f"可视化功能: {'✅ 启用 (matplotlib)' if self.enable_visualization else '❌ 禁用'}")
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -557,6 +654,13 @@ class DatasetGenerator:
                 "within_limits_count": 0,
                 "over_limit_count": 0,
                 "under_limit_count": 0
+            },
+            "visualization_stats": {
+                "enabled": self.enable_visualization,
+                "generated_count": 0,
+                "failed_count": 0,
+                "output_directory": self.viz_output_dir if self.enable_visualization else None,
+                "visualization_engine": "matplotlib + networkx"
             }
         }
 
@@ -569,7 +673,10 @@ class DatasetGenerator:
 
             self.logger.info(f"生成样本 {len(successful_samples) + 1}/{num_samples} (尝试 {attempts})")
 
-            sample = self.generate_single_sample(max_depth=depth)
+            # 生成唯一的样本ID
+            sample_id = f"sample_{len(successful_samples) + 1:04d}_{attempts:04d}"
+
+            sample = self.generate_single_sample(max_depth=depth, sample_id=sample_id)
 
             if sample:
                 successful_samples.append(sample)
@@ -597,8 +704,16 @@ class DatasetGenerator:
                 else:
                     stats["variable_control_stats"]["under_limit_count"] += 1
 
+                # 可视化统计
+                if 'visualization_path' in sample:
+                    stats["visualization_stats"]["generated_count"] += 1
+                    self.logger.info(f"🎨 可视化文件: {sample['visualization_path']}")
+                else:
+                    stats["visualization_stats"]["failed_count"] += 1
+
                 self.logger.info(
                     f"✅ 成功生成样本 {len(successful_samples)} (质量分数: {quality_score:.2f}, 变量: {actual_vars})")
+
             else:
                 stats["failed"] += 1
                 self.logger.warning(f"❌ 样本生成失败 (尝试 {attempts})")
@@ -634,7 +749,7 @@ class DatasetGenerator:
         avg_quality = sum(stats["quality_scores"]) / len(stats["quality_scores"]) if stats["quality_scores"] else 0
 
         self.logger.info("=" * 60)
-        self.logger.info("📊 数据集生成统计（变量数量控制版）")
+        self.logger.info("📊 数据集生成统计（变量数量控制版 + matplotlib可视化）")
         self.logger.info(f"成功率: {success_rate:.1f}% ({stats['successful']}/{stats['total_attempts']})")
         self.logger.info(f"平均质量分数: {avg_quality:.3f}")
         self.logger.info(f"语义域分布: {stats['semantic_domains']}")
@@ -649,11 +764,138 @@ class DatasetGenerator:
         self.logger.info(f"  低于下限: {var_stats['under_limit_count']}")
         self.logger.info(f"  目标范围: {self.min_variables}-{self.max_variables}")
 
+        # 可视化统计
+        viz_stats = stats["visualization_stats"]
+        self.logger.info("🎨 可视化统计:")
+        self.logger.info(f"  功能状态: {'启用' if viz_stats['enabled'] else '禁用'}")
+        self.logger.info(f"  可视化引擎: {viz_stats.get('visualization_engine', 'Unknown')}")
+        if viz_stats['enabled']:
+            self.logger.info(f"  成功生成: {viz_stats['generated_count']}")
+            self.logger.info(f"  生成失败: {viz_stats['failed_count']}")
+            self.logger.info(f"  输出目录: {viz_stats['output_directory']}")
+            viz_success_rate = (viz_stats['generated_count'] /
+                                (viz_stats['generated_count'] + viz_stats['failed_count']) * 100
+                                if (viz_stats['generated_count'] + viz_stats['failed_count']) > 0 else 0)
+            self.logger.info(f"  可视化成功率: {viz_success_rate:.1f}%")
+
         self.logger.info("=" * 60)
+
+    def generate_sample_with_custom_visualization(
+            self,
+            max_depth: int = 3,
+            sample_id: Optional[str] = None,
+            viz_style: str = "modern",
+            viz_format: str = "png"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        生成单个样本并自定义可视化选项
+
+        :param max_depth: 最大推理深度
+        :param sample_id: 样本ID
+        :param viz_style: 可视化风格 ("modern", "classic", "minimal")
+        :param viz_format: 可视化格式 ("png", "pdf", "svg")
+        :return: 样本数据
+        """
+        if sample_id is None:
+            sample_id = f"custom_{random.randint(1000, 9999)}"
+
+        # 临时保存原始设置
+        original_enable = self.enable_visualization
+
+        # 启用可视化
+        self.enable_visualization = True
+
+        try:
+            # 生成样本
+            sample = self.generate_single_sample(max_depth=max_depth, sample_id=sample_id)
+
+            # 如果样本生成成功且需要自定义可视化
+            if sample and (viz_style != "modern" or viz_format != "png"):
+                # 这里需要重新生成可视化，但需要保存root_node
+                # 注意：当前实现中root_node没有保存到sample中
+                self.logger.info(f"🎨 自定义可视化选项: 风格={viz_style}, 格式={viz_format}")
+                self.logger.warning("⚠️ 自定义可视化需要在generate_single_sample中保存root_node")
+
+            return sample
+
+        finally:
+            # 恢复原始设置
+            self.enable_visualization = original_enable
+
+    def create_visualization_gallery(self, samples: List[Dict], output_dir: str = "output/gallery"):
+        """
+        为多个样本创建可视化画廊
+
+        :param samples: 样本列表
+        :param output_dir: 输出目录
+        """
+        try:
+            from dag.visualizer import create_comparison_visualization
+
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            # 收集有可视化路径的样本
+            viz_samples = [s for s in samples if 'visualization_path' in s]
+
+            if not viz_samples:
+                self.logger.warning("没有找到包含可视化的样本")
+                return
+
+            # 创建摘要页面
+            summary_html = self._create_html_summary(viz_samples, output_dir)
+
+            summary_path = os.path.join(output_dir, "visualization_gallery.html")
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write(summary_html)
+
+            self.logger.info(f"🎨 可视化画廊已创建: {summary_path}")
+
+        except Exception as e:
+            self.logger.error(f"创建可视化画廊失败: {e}")
+
+    def _create_html_summary(self, samples: List[Dict], output_dir: str) -> str:
+        """创建HTML摘要页面"""
+        html_parts = [
+            "<!DOCTYPE html>",
+            "<html><head><title>DAG 可视化画廊</title>",
+            "<style>",
+            "body { font-family: Arial, sans-serif; margin: 20px; }",
+            ".sample { border: 1px solid #ccc; margin: 20px 0; padding: 15px; }",
+            ".viz-image { max-width: 400px; height: auto; }",
+            ".metadata { background: #f5f5f5; padding: 10px; margin: 10px 0; }",
+            "</style></head><body>",
+            f"<h1>DAG 可视化画廊 ({len(samples)} 个样本)</h1>"
+        ]
+
+        for i, sample in enumerate(samples, 1):
+            metadata = sample.get('metadata', {})
+            viz_path = sample.get('visualization_path', '')
+
+            # 计算相对路径
+            if viz_path:
+                rel_path = os.path.relpath(viz_path, output_dir)
+            else:
+                rel_path = "无可视化"
+
+            html_parts.extend([
+                f"<div class='sample'>",
+                f"<h3>样本 {i}</h3>",
+                f"<img src='{rel_path}' class='viz-image' alt='DAG可视化' />",
+                f"<div class='metadata'>",
+                f"<p><strong>推理深度:</strong> {metadata.get('reasoning_depth', 'N/A')}</p>",
+                f"<p><strong>变量数量:</strong> {metadata.get('variables_count', 'N/A')}</p>",
+                f"<p><strong>语义域:</strong> {metadata.get('semantic_domain', 'N/A')}</p>",
+                f"<p><strong>复杂度:</strong> {metadata.get('logical_complexity', 'N/A')}</p>",
+                f"<p><strong>质量分数:</strong> {sample.get('quality_score', 'N/A'):.3f}</p>",
+                f"</div></div>"
+            ])
+
+        html_parts.extend(["</body></html>"])
+        return '\n'.join(html_parts)
 
 
 def main():
-    """主函数示例（变量数量控制版）"""
+    """主函数示例（变量数量控制版 + matplotlib可视化）"""
     # 配置日志
     logging.basicConfig(
         level=logging.INFO,
@@ -667,20 +909,43 @@ def main():
         retries=3
     )
 
-    # 初始化变量数量控制的数据集生成器
+    # 初始化带matplotlib可视化功能的数据集生成器
     generator = DatasetGenerator(
         llm_dispatcher=llm,
         prompt_template_path="prompt/lsat_prompt.txt",
-        max_variables=10,  # 最大8个变量
-        min_variables=3  # 最小4个变量
+        max_variables=10,  # 最大10个变量
+        min_variables=3,  # 最小3个变量
+        enable_visualization=True,  # 启用可视化
+        viz_output_dir="output/dag_visualizations"  # 可视化输出目录
     )
 
-    # 生成数据集（降低深度范围以配合变量控制）
+    # 生成数据集（每个样本都会自动生成对应的DAG图片）
     generator.generate_dataset(
-        num_samples=1,
-        output_path="output/controlled_lsat_dataset_v2.jsonl",
-        max_depth_range=(6, 15)  # 降低深度范围
+        num_samples=1,  # 先生成少量样本进行测试
+        output_path="output/controlled_lsat_dataset_with_matplotlib_viz.jsonl",
+        max_depth_range=(8, 10)  # 降低深度范围以便快速测试
     )
+
+    # 示例：生成单个样本并自定义可视化
+    print("\n" + "=" * 50)
+    print("🎨 生成单个样本并自定义可视化")
+    print("=" * 50)
+
+    single_sample = generator.generate_sample_with_custom_visualization(
+        max_depth=10,
+        sample_id="demo_matplotlib",
+        viz_style="modern",
+        viz_format="png"
+    )
+
+    if single_sample:
+        print(f"✅ 单个样本生成成功")
+        if 'visualization_path' in single_sample:
+            print(f"🎨 可视化路径: {single_sample['visualization_path']}")
+        print(f"📊 质量分数: {single_sample.get('quality_score', 0):.3f}")
+        print(f"🔢 变量数量: {single_sample.get('metadata', {}).get('variables_count', 0)}")
+    else:
+        print("❌ 单个样本生成失败")
 
 
 if __name__ == "__main__":
