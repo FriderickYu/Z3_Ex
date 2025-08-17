@@ -1,438 +1,248 @@
-# 文件：dag/visualizer.py
-# 功能：将 DAGNode 结构可视化，使用 matplotlib + networkx 替代 Graphviz
-# 优势：安装简单，兼容性好，图形美观，支持多种输出格式
+# 可视化：使用 matplotlib + networkx，将结论节点着色与其他节点不同
+# 说明：在保持原有思路（networkx + 分层布局 + 文本框节点）的基础上，
+#       清理未使用的 import / 代码，移除表情符号，逻辑尽量简洁。
 
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import networkx as nx
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-import os
-from pathlib import Path
+from typing import Dict, List, Tuple
 
 
-def visualize_dag(root_node, filename="reasoning_dag", format="png",
-                  figsize=(12, 8), dpi=300, style="modern"):
-    """
-    将 DAGNode 结构输出为可视化图片
+def visualize_dag(root_node, filename: str = "reasoning_dag", format: str = "png",
+                  figsize: Tuple[int, int] = (12, 8), dpi: int = 300, style: str = "modern") -> None:
+    """将 DAGNode 结构可视化为图片。
 
     参数：
-        root_node: DAGNode，DAG 的根节点
-        filename: str，输出文件名（不含扩展名）
-        format: str，输出格式 (png, pdf, svg, jpg)
-        figsize: tuple，图片尺寸
-        dpi: int，图片分辨率
-        style: str，可视化风格 ("modern", "classic", "minimal")
+        root_node: DAG 的根节点（需包含 .children / .rule / .z3_expr 等常见属性）
+        filename: 输出文件名（不含扩展名）
+        format: 输出格式（png/pdf/svg/jpg）
+        figsize: 图尺寸
+        dpi: 分辨率
+        style: 风格（"modern" | "classic" | "minimal"）
     """
-    try:
-        # 构建 NetworkX 图
-        G, node_info = _build_networkx_graph(root_node)
+    G, node_info = _build_networkx_graph(root_node)
+    if G.number_of_nodes() == 0:
+        print("[DAG 可视化] 没有可视化的节点")
+        return
 
-        if len(G.nodes()) == 0:
-            print(f"[⚠️  DAG 可视化警告] 没有找到有效节点")
-            return
+    plt.style.use("default")
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
 
-        # 设置图形样式
-        plt.style.use('default')  # 确保使用默认样式
-        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    if style == "classic":
+        _draw_classic_style(G, node_info, ax)
+    elif style == "minimal":
+        _draw_minimal_style(G, node_info, ax)
+    else:
+        _draw_modern_style(G, node_info, ax)
 
-        # 根据风格选择布局和颜色
-        if style == "modern":
-            _draw_modern_style(G, node_info, ax)
-        elif style == "classic":
-            _draw_classic_style(G, node_info, ax)
-        else:  # minimal
-            _draw_minimal_style(G, node_info, ax)
+    ax.set_title("Logical Reasoning DAG", fontsize=16, fontweight="bold", pad=16)
+    ax.axis("off")
+    plt.tight_layout()
 
-        # 设置标题和布局
-        ax.set_title("Logical Reasoning DAG", fontsize=16, fontweight='bold', pad=20)
-        ax.axis('off')  # 隐藏坐标轴
+    out_path = f"{filename}.{format}"
+    plt.savefig(out_path, format=format, dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"[DAG 可视化] 已保存：{out_path}")
 
-        # 紧凑布局
-        plt.tight_layout()
 
-        # 保存文件
-        output_path = f"{filename}.{format}"
-        plt.savefig(output_path, format=format, dpi=dpi, bbox_inches='tight',
-                    facecolor='white', edgecolor='none')
-        plt.close()  # 释放内存
-
-        print(f"[✅ DAG 可视化输出] 已保存为 {output_path}")
-
-    except Exception as e:
-        print(f"[❌ DAG 可视化失败] {e}")
-        # 确保释放matplotlib资源
-        plt.close('all')
-
+# ------------------------------
+# 构图与文本处理
+# ------------------------------
 
 def _build_networkx_graph(root_node) -> Tuple[nx.DiGraph, Dict]:
-    """构建 NetworkX 有向图"""
     G = nx.DiGraph()
-    node_info = {}
+    node_info: Dict[int, Dict] = {}
     visited = set()
 
-    def traverse_node(node, depth=0):
+    def dfs(node, depth: int = 0):
         if node is None:
             return
-
-        node_id = id(node)
-        if node_id in visited:
+        nid = id(node)
+        if nid in visited:
             return
-        visited.add(node_id)
+        visited.add(nid)
 
-        # 准备节点信息
-        rule_name = getattr(node, 'rule_name', None) or \
-                    (type(node.rule).__name__ if hasattr(node, 'rule') and node.rule else "Unknown")
-
-        expr_str = str(getattr(node, 'z3_expr', 'Unknown'))
-
-        # 简化表达式显示
+        rule_name = getattr(node, "rule_name", None) or (
+            type(node.rule).__name__ if hasattr(node, "rule") and node.rule else "Unknown"
+        )
+        expr_str = str(getattr(node, "z3_expr", "Unknown"))
         display_expr = _simplify_expression(expr_str)
 
-        # 添加节点到图中
-        G.add_node(node_id)
-        node_info[node_id] = {
-            'rule': rule_name,
-            'expression': display_expr,
-            'depth': depth,
-            'full_expr': expr_str
+        G.add_node(nid)
+        node_info[nid] = {
+            "rule": rule_name,
+            "expression": display_expr,
+            "depth": depth,
+            "full_expr": expr_str,
         }
 
-        # 处理子节点
-        if hasattr(node, 'children') and node.children:
+        if getattr(node, "children", None):
             for child in node.children:
-                if child is not None:
-                    child_id = id(child)
-                    traverse_node(child, depth + 1)
-                    # 在 DAG 中，边从子节点指向父节点（表示推理方向）
-                    G.add_edge(child_id, node_id)
+                if child is None:
+                    continue
+                cid = id(child)
+                dfs(child, depth + 1)
+                # 用子 -> 父 表示推理方向
+                G.add_edge(cid, nid)
 
-    traverse_node(root_node)
+    dfs(root_node)
     return G, node_info
 
 
-def _simplify_expression(expr_str: str, max_length: int = 25) -> str:
-    """简化表达式显示"""
-    if len(expr_str) <= max_length:
-        return expr_str
-
-    # 常见的简化规则
-    expr_str = expr_str.replace('LogicVar_', 'V')
-    expr_str = expr_str.replace('_General', '')
-    expr_str = expr_str.replace('_Premise', '')
-    expr_str = expr_str.replace('_Conclusion', '')
-
-    # 如果还是太长，截断并添加省略号
-    if len(expr_str) > max_length:
-        return expr_str[:max_length - 3] + "..."
-
-    return expr_str
+def _simplify_expression(s: str, max_len: int = 28) -> str:
+    if not s:
+        return ""
+    s = s.replace("LogicVar_", "V").replace("_General", "").replace("_Premise", "").replace("_Conclusion", "")
+    return s if len(s) <= max_len else s[: max_len - 3] + "..."
 
 
-def _draw_modern_style(G: nx.DiGraph, node_info: Dict, ax):
-    """现代风格绘制"""
-    # 使用层次化布局
-    pos = _create_hierarchical_layout(G, node_info)
+# ------------------------------
+# 三种绘制风格（结论节点：out_degree==0 高亮）
+# ------------------------------
 
-    # 现代配色方案
+def _draw_modern_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
+    pos = _hierarchical_layout(G, node_info)
     colors = {
-        'background': '#f8f9fa',
-        'node_fill': '#e3f2fd',
-        'node_border': '#1976d2',
-        'edge': '#666666',
-        'text': '#212121',
-        'rule_text': '#1565c0'
+        "background": "#f8f9fa",
+        "node_fill": "#e3f2fd",
+        "node_border": "#1976d2",
+        "edge": "#666666",
+        "text": "#212121",
+        # 结论节点颜色（与普通节点不同）
+        "conclusion_fill": "#ffe082",
+        "conclusion_border": "#ef6c00",
     }
+    ax.set_facecolor(colors["background"])
+    _draw_curved_edges(G, pos, ax, color=colors["edge"], alpha=0.7)
 
-    # 设置背景色
-    ax.set_facecolor(colors['background'])
+    for nid, (x, y) in pos.items():
+        info = node_info[nid]
+        is_final = G.out_degree(nid) == 0
+        facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
+        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        lw = 2.2 if is_final else 1.8
 
-    # 绘制边（使用曲线）
-    _draw_curved_edges(G, pos, ax, color=colors['edge'], alpha=0.7)
-
-    # 绘制节点
-    for node_id, (x, y) in pos.items():
-        info = node_info[node_id]
-
-        # 节点形状（圆角矩形）
-        bbox = dict(boxstyle="round,pad=0.3",
-                    facecolor=colors['node_fill'],
-                    edgecolor=colors['node_border'],
-                    linewidth=2, alpha=0.9)
-
-        # 节点文本
-        rule_text = info['rule']
-        expr_text = info['expression']
-
-        # 分行显示
-        display_text = f"{rule_text}\n{expr_text}"
-
-        ax.text(x, y, display_text, ha='center', va='center',
-                fontsize=9, fontweight='bold', bbox=bbox,
-                color=colors['text'])
+        bbox = dict(boxstyle="round,pad=0.3", facecolor=facec, edgecolor=edgec, linewidth=lw, alpha=0.97)
+        txt = f"{info['rule']}\n{info['expression']}"
+        ax.text(x, y, txt, ha="center", va="center", fontsize=9, fontweight="bold", bbox=bbox, color=colors["text"])
 
 
-def _draw_classic_style(G: nx.DiGraph, node_info: Dict, ax):
-    """经典风格绘制"""
-    pos = _create_hierarchical_layout(G, node_info)
-
-    # 经典配色
+def _draw_classic_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
+    pos = _hierarchical_layout(G, node_info)
     colors = {
-        'node_fill': '#ffffff',
-        'node_border': '#333333',
-        'edge': '#000000',
-        'text': '#000000'
+        "node_fill": "#ffffff",
+        "node_border": "#333333",
+        "edge": "#000000",
+        "text": "#000000",
+        "conclusion_fill": "#fff3cd",
+        "conclusion_border": "#cc9a06",
     }
-
-    # 绘制边（直线）
-    _draw_straight_edges(G, pos, ax, color=colors['edge'])
-
-    # 绘制节点
-    for node_id, (x, y) in pos.items():
-        info = node_info[node_id]
-
-        # 节点形状（矩形）
-        bbox = dict(boxstyle="square,pad=0.3",
-                    facecolor=colors['node_fill'],
-                    edgecolor=colors['node_border'],
-                    linewidth=1.5)
-
-        display_text = f"{info['rule']}\n{info['expression']}"
-
-        ax.text(x, y, display_text, ha='center', va='center',
-                fontsize=9, bbox=bbox, color=colors['text'])
+    _draw_straight_edges(G, pos, ax, color=colors["edge"])
+    for nid, (x, y) in pos.items():
+        info = node_info[nid]
+        is_final = G.out_degree(nid) == 0
+        facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
+        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        lw = 2.0 if is_final else 1.5
+        bbox = dict(boxstyle="square,pad=0.3", facecolor=facec, edgecolor=edgec, linewidth=lw, alpha=0.98)
+        ax.text(x, y, f"{info['rule']}\n{info['expression']}", ha="center", va="center", fontsize=9, bbox=bbox, color=colors["text"])
 
 
-def _draw_minimal_style(G: nx.DiGraph, node_info: Dict, ax):
-    """极简风格绘制"""
-    pos = _create_hierarchical_layout(G, node_info)
-
-    # 极简配色
+def _draw_minimal_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
+    pos = _hierarchical_layout(G, node_info)
     colors = {
-        'node_fill': '#f5f5f5',
-        'node_border': '#888888',
-        'edge': '#cccccc',
-        'text': '#333333'
+        "node_fill": "#f5f5f5",
+        "node_border": "#888888",
+        "edge": "#999999",
+        "text": "#222222",
+        "conclusion_fill": "#f8d7da",  # 淡红，醒目但不刺眼
+        "conclusion_border": "#c82333",
     }
-
-    # 绘制边（细线）
-    _draw_straight_edges(G, pos, ax, color=colors['edge'], width=1, alpha=0.6)
-
-    # 绘制节点（只显示规则名）
-    for node_id, (x, y) in pos.items():
-        info = node_info[node_id]
-
-        # 圆形节点
-        circle = plt.Circle((x, y), 0.3, facecolor=colors['node_fill'],
-                            edgecolor=colors['node_border'], linewidth=1)
-        ax.add_patch(circle)
-
-        # 只显示规则名
-        ax.text(x, y, info['rule'], ha='center', va='center',
-                fontsize=8, color=colors['text'], fontweight='bold')
+    _draw_straight_edges(G, pos, ax, color=colors["edge"], alpha=0.6, width=1.2)
+    for nid, (x, y) in pos.items():
+        info = node_info[nid]
+        is_final = G.out_degree(nid) == 0
+        facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
+        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        bbox = dict(boxstyle="round,pad=0.25", facecolor=facec, edgecolor=edgec, linewidth=1.6 if is_final else 1.2, alpha=0.96)
+        ax.text(x, y, f"{info['rule']}\n{info['expression']}", ha="center", va="center", fontsize=9, bbox=bbox, color=colors["text"])
 
 
-def _create_hierarchical_layout(G: nx.DiGraph, node_info: Dict) -> Dict[int, Tuple[float, float]]:
-    """创建层次化布局"""
-    # 按深度分组节点
-    depth_groups = {}
-    for node_id, info in node_info.items():
-        depth = info['depth']
-        if depth not in depth_groups:
-            depth_groups[depth] = []
-        depth_groups[depth].append(node_id)
+# ------------------------------
+# 辅助：布局与连线
+# ------------------------------
 
-    pos = {}
-    max_depth = max(depth_groups.keys()) if depth_groups else 0
+def _hierarchical_layout(G: nx.DiGraph, node_info: Dict) -> Dict[int, Tuple[float, float]]:
+    """按 depth 分层，自上而下。"""
+    layers: Dict[int, List[int]] = {}
+    for nid, info in node_info.items():
+        layers.setdefault(info["depth"], []).append(nid)
 
-    for depth, nodes in depth_groups.items():
-        y = max_depth - depth  # 根节点在顶部
+    y_gap = 1.2
+    x_gap = 1.2
+    pos: Dict[int, Tuple[float, float]] = {}
 
-        if len(nodes) == 1:
-            # 单个节点居中
-            pos[nodes[0]] = (0, y)
-        else:
-            # 多个节点均匀分布
-            x_positions = np.linspace(-len(nodes) / 2, len(nodes) / 2, len(nodes))
-            for i, node_id in enumerate(nodes):
-                pos[node_id] = (x_positions[i], y)
-
+    for depth in sorted(layers.keys()):
+        nodes = layers[depth]
+        count = max(1, len(nodes))
+        xs = np.linspace(0, (count - 1) * x_gap, count)
+        x_center = (count - 1) * x_gap / 2
+        for i, nid in enumerate(nodes):
+            pos[nid] = (xs[i] - x_center, -depth * y_gap)
     return pos
 
 
-def _draw_curved_edges(G: nx.DiGraph, pos: Dict, ax, color='gray', alpha=0.7, width=2):
-    """绘制曲线边"""
-    for edge in G.edges():
-        start_pos = pos[edge[0]]
-        end_pos = pos[edge[1]]
-
-        # 计算控制点创建曲线
-        mid_x = (start_pos[0] + end_pos[0]) / 2
-        mid_y = (start_pos[1] + end_pos[1]) / 2
-
-        # 添加一些曲率
-        control_offset = 0.2
-        control_x = mid_x + control_offset
-        control_y = mid_y
-
-        # 使用贝塞尔曲线
-        t = np.linspace(0, 1, 100)
-        x_curve = (1 - t) ** 2 * start_pos[0] + 2 * (1 - t) * t * control_x + t ** 2 * end_pos[0]
-        y_curve = (1 - t) ** 2 * start_pos[1] + 2 * (1 - t) * t * control_y + t ** 2 * end_pos[1]
-
-        ax.plot(x_curve, y_curve, color=color, alpha=alpha, linewidth=width)
-
-        # 添加箭头
-        _add_arrow(ax, start_pos, end_pos, color=color, alpha=alpha)
+def _draw_curved_edges(G: nx.DiGraph, pos: Dict[int, Tuple[float, float]], ax, color: str = "#666666", alpha: float = 0.8, width: float = 1.6) -> None:
+    for u, v in G.edges():
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        # 简单二次贝塞尔曲线（轻微弯曲，避免重叠）
+        ctrl = (mx + 0.2, my)
+        t = np.linspace(0, 1, 60)
+        xc = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * ctrl[0] + t ** 2 * x1
+        yc = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * ctrl[1] + t ** 2 * y1
+        ax.plot(xc, yc, color=color, alpha=alpha, linewidth=width)
+        _add_arrow(ax, (x0, y0), (x1, y1), color=color, alpha=alpha)
 
 
-def _draw_straight_edges(G: nx.DiGraph, pos: Dict, ax, color='black', alpha=1.0, width=1.5):
-    """绘制直线边"""
-    for edge in G.edges():
-        start_pos = pos[edge[0]]
-        end_pos = pos[edge[1]]
-
-        ax.plot([start_pos[0], end_pos[0]], [start_pos[1], end_pos[1]],
-                color=color, alpha=alpha, linewidth=width)
-
-        # 添加箭头
-        _add_arrow(ax, start_pos, end_pos, color=color, alpha=alpha)
+def _draw_straight_edges(G: nx.DiGraph, pos: Dict[int, Tuple[float, float]], ax, color: str = "#000000", alpha: float = 1.0, width: float = 1.5) -> None:
+    for u, v in G.edges():
+        x0, y0 = pos[u]
+        x1, y1 = pos[v]
+        ax.plot([x0, x1], [y0, y1], color=color, alpha=alpha, linewidth=width)
+        _add_arrow(ax, (x0, y0), (x1, y1), color=color, alpha=alpha)
 
 
-def _add_arrow(ax, start_pos: Tuple[float, float], end_pos: Tuple[float, float],
-               color='black', alpha=1.0, size=0.15):
-    """添加箭头"""
-    dx = end_pos[0] - start_pos[0]
-    dy = end_pos[1] - start_pos[1]
-
-    # 缩短箭头，避免与节点重叠
-    length = np.sqrt(dx ** 2 + dy ** 2)
-    if length > 0:
-        # 箭头起点稍微偏移
-        offset = 0.35
-        arrow_start_x = start_pos[0] + dx * offset / length
-        arrow_start_y = start_pos[1] + dy * offset / length
-        arrow_end_x = end_pos[0] - dx * offset / length
-        arrow_end_y = end_pos[1] - dy * offset / length
-
-        ax.annotate('', xy=(arrow_end_x, arrow_end_y),
-                    xytext=(arrow_start_x, arrow_start_y),
-                    arrowprops=dict(arrowstyle='->', color=color, alpha=alpha,
-                                    lw=1.5, shrinkA=0, shrinkB=0))
+def _add_arrow(ax, start: Tuple[float, float], end: Tuple[float, float], color: str = "#000000", alpha: float = 1.0, size: float = 0.15) -> None:
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    L = (dx ** 2 + dy ** 2) ** 0.5
+    if L <= 0:
+        return
+    offset = 0.35
+    sx = start[0] + dx * offset / L
+    sy = start[1] + dy * offset / L
+    ex = end[0] - dx * offset / L
+    ey = end[1] - dy * offset / L
+    ax.annotate('', xy=(ex, ey), xytext=(sx, sy), arrowprops=dict(arrowstyle='->', color=color, alpha=alpha, lw=1.5, shrinkA=0, shrinkB=0))
 
 
-def create_comparison_visualization(dag_list: List, labels: List[str],
-                                    filename="dag_comparison", format="png"):
-    """
-    创建多个DAG的对比可视化
+# 可选：导出文本信息（若外部需要，可保留；不需要可自行删除）
+def save_dag_info(root_node, filename: str = "dag_info.txt") -> None:
+    lines: List[str] = []
+    visited = set()
 
-    参数：
-        dag_list: DAG根节点列表
-        labels: 对应的标签列表
-        filename: 输出文件名
-        format: 输出格式
-    """
-    try:
-        n_dags = len(dag_list)
-        if n_dags == 0:
-            print("[⚠️  对比可视化警告] 没有提供DAG")
+    def walk(n, depth=0):
+        if n is None or id(n) in visited:
             return
+        visited.add(id(n))
+        indent = '  ' * depth
+        rule = getattr(n, 'rule_name', 'Unknown')
+        expr = str(getattr(n, 'z3_expr', 'Unknown'))
+        lines.append(f"{indent}[depth {depth}] {rule}: {expr}")
+        for c in getattr(n, 'children', []) or []:
+            walk(c, depth + 1)
 
-        # 创建子图
-        cols = min(3, n_dags)
-        rows = (n_dags + cols - 1) // cols
-
-        fig, axes = plt.subplots(rows, cols, figsize=(6 * cols, 5 * rows), dpi=300)
-        if n_dags == 1:
-            axes = [axes]
-        elif rows == 1:
-            axes = axes
-        else:
-            axes = axes.flatten()
-
-        for i, (dag, label) in enumerate(zip(dag_list, labels)):
-            ax = axes[i]
-
-            G, node_info = _build_networkx_graph(dag)
-            if len(G.nodes()) > 0:
-                _draw_minimal_style(G, node_info, ax)
-
-            ax.set_title(label, fontsize=12, fontweight='bold')
-            ax.axis('off')
-
-        # 隐藏多余的子图
-        for i in range(n_dags, len(axes)):
-            axes[i].axis('off')
-
-        plt.tight_layout()
-
-        output_path = f"{filename}.{format}"
-        plt.savefig(output_path, format=format, dpi=300, bbox_inches='tight')
-        plt.close()
-
-        print(f"[✅ 对比可视化输出] 已保存为 {output_path}")
-
-    except Exception as e:
-        print(f"[❌ 对比可视化失败] {e}")
-        plt.close('all')
-
-
-def save_dag_info(root_node, filename="dag_info.txt"):
-    """
-    保存DAG的文本信息（作为可视化的补充）
-    """
-    try:
-        info_lines = []
-        visited = set()
-
-        def collect_info(node, depth=0):
-            if node is None or id(node) in visited:
-                return
-            visited.add(id(node))
-
-            indent = "  " * depth
-            rule_name = getattr(node, 'rule_name', 'Unknown')
-            expr = str(getattr(node, 'z3_expr', 'Unknown'))
-
-            info_lines.append(f"{indent}[深度 {depth}] {rule_name}: {expr}")
-
-            if hasattr(node, 'children') and node.children:
-                for child in node.children:
-                    collect_info(child, depth + 1)
-
-        collect_info(root_node)
-
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write("DAG 结构信息\n")
-            f.write("=" * 50 + "\n")
-            f.write("\n".join(info_lines))
-
-        print(f"[✅ DAG 信息输出] 已保存为 {filename}")
-
-    except Exception as e:
-        print(f"[❌ DAG 信息保存失败] {e}")
-
-
-# 为了保持向后兼容，提供一个简化的接口
-def visualize_dag_simple(root_node, output_dir="output", sample_id="sample"):
-    """
-    简化的可视化接口（与原始接口兼容）
-    """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-
-    filename = os.path.join(output_dir, f"dag_{sample_id}")
-
-    # 生成多种格式和风格
-    visualize_dag(root_node, filename=filename, format="png", style="modern")
-    visualize_dag(root_node, filename=f"{filename}_minimal", format="pdf", style="minimal")
-
-    # 同时保存文本信息
-    save_dag_info(root_node, filename=f"{filename}_info.txt")
-
-
-if __name__ == "__main__":
-    # 测试代码
-    print("DAG 可视化器测试")
-    print("需要提供 DAGNode 实例进行测试")
-    print("依赖库: matplotlib, networkx, numpy")
-    print("安装命令: pip install matplotlib networkx numpy")
+    walk(root_node)
+    with open(filename, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
