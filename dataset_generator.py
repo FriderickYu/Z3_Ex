@@ -12,7 +12,7 @@ from pathlib import Path
 
 from dag.dag_builder import build_reasoning_dag
 from dag.validator import validate_logical_steps
-from dag.visualizer import visualize_dag  # 保持原有可视化
+from dag.visualizer import visualize_dag
 
 from distractor.generator import DistractorGenerator
 from api_key.llm_dispatcher import LLMDispatcher
@@ -551,7 +551,7 @@ def main():
     )
 
     # 小批量验证
-    out_file = "output/lsat_dataset_clean.jsonl"
+    out_file = "output/lsat_dataset_0819.jsonl"
     if os.path.exists(out_file):
         os.remove(out_file)
     generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(3, 10))

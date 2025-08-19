@@ -236,6 +236,7 @@ def _draw_minimal_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
 # 辅助：布局与连线
 # ------------------------------
 
+
 def _hierarchical_layout(G: nx.DiGraph, node_info: Dict) -> Dict[int, Tuple[float, float]]:
     """按 depth 分层，自上而下。"""
     layers: Dict[int, List[int]] = {}
