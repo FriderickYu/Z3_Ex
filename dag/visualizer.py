@@ -1,15 +1,19 @@
-# 可视化：使用 matplotlib + networkx，将结论节点着色与其他节点不同
-# 说明：在保持原有思路（networkx + 分层布局 + 文本框节点）的基础上，
-#       清理未使用的 import / 代码，移除表情符号，逻辑尽量简洁。
-
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-from typing import Dict, List, Tuple
+import re
+from typing import Dict, List, Tuple, Optional
 
 
-def visualize_dag(root_node, filename: str = "reasoning_dag", format: str = "png",
-                  figsize: Tuple[int, int] = (12, 8), dpi: int = 300, style: str = "modern") -> None:
+def visualize_dag(
+    root_node,
+    filename: str = "reasoning_dag",
+    format: str = "png",
+    figsize: Tuple[int, int] = (12, 8),
+    dpi: int = 300,
+    style: str = "modern",
+    var_map: Optional[Dict[str, str]] = None,
+) -> None:
     """将 DAGNode 结构可视化为图片。
 
     参数：
@@ -19,8 +23,10 @@ def visualize_dag(root_node, filename: str = "reasoning_dag", format: str = "png
         figsize: 图尺寸
         dpi: 分辨率
         style: 风格（"modern" | "classic" | "minimal"）
+        var_map: 可选，V* → 语义变量名的映射（例如 {"V1":"completed_coursework", ...}）。
+                 若提供，将用于把 Unknown 节点替换为可读的“派生/中间”标签。
     """
-    G, node_info = _build_networkx_graph(root_node)
+    G, node_info = _build_networkx_graph(root_node, var_map)
     if G.number_of_nodes() == 0:
         print("[DAG 可视化] 没有可视化的节点")
         return
@@ -49,7 +55,7 @@ def visualize_dag(root_node, filename: str = "reasoning_dag", format: str = "png
 # 构图与文本处理
 # ------------------------------
 
-def _build_networkx_graph(root_node) -> Tuple[nx.DiGraph, Dict]:
+def _build_networkx_graph(root_node, var_map: Optional[Dict[str, str]] = None) -> Tuple[nx.DiGraph, Dict]:
     G = nx.DiGraph()
     node_info: Dict[int, Dict] = {}
     visited = set()
@@ -63,17 +69,21 @@ def _build_networkx_graph(root_node) -> Tuple[nx.DiGraph, Dict]:
         visited.add(nid)
 
         rule_name = getattr(node, "rule_name", None) or (
-            type(node.rule).__name__ if hasattr(node, "rule") and node.rule else "Unknown"
+            type(node.rule).__name__ if hasattr(node, "rule") and node.rule else "Derived"
         )
-        expr_str = str(getattr(node, "z3_expr", "Unknown"))
-        display_expr = _simplify_expression(expr_str)
+        # 原始表达式
+        expr_str = str(getattr(node, "z3_expr", ""))
+
+        # 清理 + Unknown 替换
+        display_expr, is_derived = _prettify_expression(expr_str, var_map)
 
         G.add_node(nid)
         node_info[nid] = {
-            "rule": rule_name,
+            "rule": rule_name if rule_name != "Unknown" else "Derived",
             "expression": display_expr,
             "depth": depth,
             "full_expr": expr_str,
+            "derived": is_derived or (rule_name in {"Unknown", None}),
         }
 
         if getattr(node, "children", None):
@@ -89,15 +99,57 @@ def _build_networkx_graph(root_node) -> Tuple[nx.DiGraph, Dict]:
     return G, node_info
 
 
-def _simplify_expression(s: str, max_len: int = 28) -> str:
+def _prettify_expression(s: str, var_map: Optional[Dict[str, str]] = None, max_len: int = 28) -> Tuple[str, bool]:
+    """将表达式转为可读文本，并识别是否为“派生/中间”节点。
+    返回 (显示字符串, 是否派生)
+    规则：
+      - "Unknown V5" → "qualified_for_degree (derived)"
+      - "Unknown Implies(V2, V3)" → "Derived: Implies(passed_examinations, submitted_thesis)"
+      - 其余表达式：替换其中的 V* 为语义名；如找不到映射则保留。
+    """
     if not s:
-        return ""
-    s = s.replace("LogicVar_", "V").replace("_General", "").replace("_Premise", "").replace("_Conclusion", "")
+        return "", True
+
+    is_derived = False
+    text = s
+
+    # 常规清理（便于阅读）
+    text = text.replace("LogicVar_", "V").replace("_General", "").replace("_Premise", "").replace("_Conclusion", "")
+
+    # Unknown 规则 1：纯变量
+    m = re.fullmatch(r"Unknown\s+(V\d+)", text)
+    if m:
+        v = m.group(1)
+        pretty = (var_map or {}).get(v, v) + " (derived)"
+        return _truncate(pretty, max_len), True
+
+    # Unknown 规则 2：带 Implies(...)
+    m = re.fullmatch(r"Unknown\s+Implies\((.+)\)", text)
+    if m:
+        body = m.group(1)
+        pretty_body = _replace_vars(body, var_map)
+        pretty = f"Derived: Implies({pretty_body})"
+        return _truncate(pretty, max_len), True
+
+    # 其他：仅做变量替换
+    text2 = _replace_vars(text, var_map)
+    # 若原串含 Unknown，则仍视为派生
+    is_derived = ("Unknown" in s)
+    return _truncate(text2, max_len), is_derived
+
+
+def _replace_vars(text: str, var_map: Optional[Dict[str, str]] = None) -> str:
+    if not var_map:
+        return text
+    return re.sub(r"V\d+", lambda mv: var_map.get(mv.group(0), mv.group(0)), text)
+
+
+def _truncate(s: str, max_len: int) -> str:
     return s if len(s) <= max_len else s[: max_len - 3] + "..."
 
 
 # ------------------------------
-# 三种绘制风格（结论节点：out_degree==0 高亮）
+# 三种绘制风格（结论节点：out_degree==0 高亮；派生节点虚线）
 # ------------------------------
 
 def _draw_modern_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
@@ -111,6 +163,8 @@ def _draw_modern_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
         # 结论节点颜色（与普通节点不同）
         "conclusion_fill": "#ffe082",
         "conclusion_border": "#ef6c00",
+        # 派生节点边框（虚线）
+        "derived_border": "#6c757d",
     }
     ax.set_facecolor(colors["background"])
     _draw_curved_edges(G, pos, ax, color=colors["edge"], alpha=0.7)
@@ -118,13 +172,19 @@ def _draw_modern_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
     for nid, (x, y) in pos.items():
         info = node_info[nid]
         is_final = G.out_degree(nid) == 0
+        is_derived = bool(info.get("derived"))
         facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
-        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        edgec = colors["conclusion_border"] if is_final else (colors["derived_border"] if is_derived else colors["node_border"])
         lw = 2.2 if is_final else 1.8
-
-        bbox = dict(boxstyle="round,pad=0.3", facecolor=facec, edgecolor=edgec, linewidth=lw, alpha=0.97)
+        boxstyle = "round,pad=0.3"
+        bbox = dict(boxstyle=boxstyle, facecolor=facec, edgecolor=edgec, linewidth=lw, alpha=0.97)
         txt = f"{info['rule']}\n{info['expression']}"
-        ax.text(x, y, txt, ha="center", va="center", fontsize=9, fontweight="bold", bbox=bbox, color=colors["text"])
+        t = ax.text(x, y, txt, ha="center", va="center", fontsize=9, fontweight="bold", bbox=bbox, color=colors["text"])
+        if is_derived and not is_final:
+            # 用虚线表示派生/中间节点
+            t.set_path_effects([])
+            # 通过在文字周围再画一个近似虚线框来表达（matplotlib 文本框不直接支持虚线）
+            ax.add_patch(plt.Rectangle((x-1.2, y-0.3), 2.4, 0.6, fill=False, lw=1.4, ls="--", ec=colors["derived_border"], alpha=0.9))
 
 
 def _draw_classic_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
@@ -136,13 +196,15 @@ def _draw_classic_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
         "text": "#000000",
         "conclusion_fill": "#fff3cd",
         "conclusion_border": "#cc9a06",
+        "derived_border": "#555555",
     }
     _draw_straight_edges(G, pos, ax, color=colors["edge"])
     for nid, (x, y) in pos.items():
         info = node_info[nid]
         is_final = G.out_degree(nid) == 0
+        is_derived = bool(info.get("derived"))
         facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
-        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        edgec = colors["conclusion_border"] if is_final else (colors["derived_border"] if is_derived else colors["node_border"])
         lw = 2.0 if is_final else 1.5
         bbox = dict(boxstyle="square,pad=0.3", facecolor=facec, edgecolor=edgec, linewidth=lw, alpha=0.98)
         ax.text(x, y, f"{info['rule']}\n{info['expression']}", ha="center", va="center", fontsize=9, bbox=bbox, color=colors["text"])
@@ -155,15 +217,17 @@ def _draw_minimal_style(G: nx.DiGraph, node_info: Dict, ax) -> None:
         "node_border": "#888888",
         "edge": "#999999",
         "text": "#222222",
-        "conclusion_fill": "#f8d7da",  # 淡红，醒目但不刺眼
+        "conclusion_fill": "#f8d7da",
         "conclusion_border": "#c82333",
+        "derived_border": "#666666",
     }
     _draw_straight_edges(G, pos, ax, color=colors["edge"], alpha=0.6, width=1.2)
     for nid, (x, y) in pos.items():
         info = node_info[nid]
         is_final = G.out_degree(nid) == 0
+        is_derived = bool(info.get("derived"))
         facec = colors["conclusion_fill"] if is_final else colors["node_fill"]
-        edgec = colors["conclusion_border"] if is_final else colors["node_border"]
+        edgec = colors["conclusion_border"] if is_final else (colors["derived_border"] if is_derived else colors["node_border"])
         bbox = dict(boxstyle="round,pad=0.25", facecolor=facec, edgecolor=edgec, linewidth=1.6 if is_final else 1.2, alpha=0.96)
         ax.text(x, y, f"{info['rule']}\n{info['expression']}", ha="center", va="center", fontsize=9, bbox=bbox, color=colors["text"])
 
@@ -227,8 +291,8 @@ def _add_arrow(ax, start: Tuple[float, float], end: Tuple[float, float], color: 
     ax.annotate('', xy=(ex, ey), xytext=(sx, sy), arrowprops=dict(arrowstyle='->', color=color, alpha=alpha, lw=1.5, shrinkA=0, shrinkB=0))
 
 
-# 可选：导出文本信息（若外部需要，可保留；不需要可自行删除）
-def save_dag_info(root_node, filename: str = "dag_info.txt") -> None:
+# 可选：导出文本信息
+def save_dag_info(root_node, filename: str = "dag_info.txt", var_map: Optional[Dict[str, str]] = None) -> None:
     lines: List[str] = []
     visited = set()
 
@@ -237,9 +301,10 @@ def save_dag_info(root_node, filename: str = "dag_info.txt") -> None:
             return
         visited.add(id(n))
         indent = '  ' * depth
-        rule = getattr(n, 'rule_name', 'Unknown')
-        expr = str(getattr(n, 'z3_expr', 'Unknown'))
-        lines.append(f"{indent}[depth {depth}] {rule}: {expr}")
+        rule = getattr(n, 'rule_name', 'Derived')
+        expr = str(getattr(n, 'z3_expr', ''))
+        expr_pretty, _ = _prettify_expression(expr, var_map)
+        lines.append(f"{indent}[depth {depth}] {rule}: {expr_pretty}")
         for c in getattr(n, 'children', []) or []:
             walk(c, depth + 1)
 

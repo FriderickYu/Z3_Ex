@@ -6,6 +6,7 @@ import json
 import logging
 import random
 import os
+import uuid
 from typing import List, Dict, Any, Optional, Tuple, Set
 from pathlib import Path
 
@@ -35,6 +36,8 @@ class DatasetGenerator:
         min_variables: int = 3,
         enable_visualization: bool = True,
         viz_output_dir: str = "output/dag_visualizations",
+        # 只保留两种模式：gibberish / llm
+        semantic_binding_mode: str = "gibberish",
     ) -> None:
         self.llm = llm_dispatcher
         self.logger = logging.getLogger("dataset_generator")
@@ -56,22 +59,17 @@ class DatasetGenerator:
             Path(self.viz_output_dir).mkdir(parents=True, exist_ok=True)
             self.logger.info(f"可视化启用：{self.viz_output_dir}")
 
+        # 仅两种：gibberish（默认）| llm
+        self.semantic_binding_mode = semantic_binding_mode if semantic_binding_mode in ("gibberish", "llm") else "gibberish"
+
     # -------------------- 可视化（仍用原 visualize_dag） --------------------
     def _generate_dag_visualization(self, root_node, sample_id: str, metadata: Optional[Dict] = None) -> Optional[str]:
+        """使用 sample_id（此处即 UUID）作为图文件名"""
         if not (self.enable_visualization and root_node):
             return None
         try:
-            # 用“保留步数”和“实际使用变量数”命名，避免歧义
-            steps_kept = (metadata or {}).get("steps", {}).get("kept", None)
-            vars_used = (metadata or {}).get("variables", {}).get("used", None)
-            if steps_kept is not None and vars_used is not None:
-                filename = f"dag_{sample_id}_d{steps_kept}_v{vars_used}"
-            else:
-                depth0 = (metadata or {}).get("reasoning_depth", 0)
-                vcnt0 = (metadata or {}).get("variables_count", 0)
-                filename = f"dag_{sample_id}_d{depth0}_v{vcnt0}"
+            filename = sample_id  # 图名=UUID
             out_path_noext = os.path.join(self.viz_output_dir, filename)
-
             visualize_dag(root_node, filename=out_path_noext, format="png", style="modern")
             out_path = f"{out_path_noext}.png"
             self.logger.info(f"已生成可视化：{out_path}")
@@ -105,20 +103,104 @@ class DatasetGenerator:
             self.logger.error(f"步骤变量提取失败：{e}")
             return []
 
-    # -------------------- 语义绑定 --------------------
+    # -------------------- 语义绑定（仅 gibberish / llm） --------------------
     def _generate_semantic_bindings(self, variables: List[str]) -> Dict[str, str]:
-        pool = [
-            "completed_coursework", "passed_examinations", "submitted_thesis", "attended_seminars",
-            "received_approval", "qualified_for_degree", "defended_research", "earned_certification",
-            "published_work", "won_recognition", "met_requirements", "achieved_standards",
-            "project_initiated", "budget_approved", "team_assembled", "milestone_achieved",
-            "client_satisfied", "contract_finalized", "payment_processed", "quality_verified",
-        ]
-        bindings: Dict[str, str] = {}
-        for i, v in enumerate(variables):
-            term = pool[i % len(pool)]
-            bindings[v] = term if term not in bindings.values() else f"{term}_{i}"
-        return bindings
+        """根据配置返回变量到“语义名”的绑定。
+        模式：
+          - gibberish: 使用无实际语义的伪词（默认，推荐做纯逻辑推理）
+          - llm: 交给 LLM 起名（不限定领域），失败则回退 gibberish
+        """
+        mode = self.semantic_binding_mode
+        if not variables:
+            return {}
+
+        if mode == "gibberish":
+            names = self._gen_pseudowords(len(variables))
+            return {v: n for v, n in zip(variables, names)}
+
+        # mode == "llm"
+        mapping = self._generate_llm_semantics(variables)
+        if mapping:
+            return mapping
+        # 兜底回退：gibberish
+        names = self._gen_pseudowords(len(variables))
+        return {v: n for v, n in zip(variables, names)}
+
+    def _gen_pseudowords(self, n: int) -> List[str]:
+        """生成 n 个无语义、可读性较好的伪词；高随机性 + 去重（ASCII 小写）。"""
+        consonants = list("bcdfghjklmnpqrstvwxz")
+        vowels = list("aeiouy")
+
+        def one_word():
+            # 2~4 个音节，随机尾辅音，随机插入重复音节，提升多样性
+            syls = random.randint(2, 4)
+            s = ""
+            for _ in range(syls):
+                s += random.choice(consonants) + random.choice(vowels)
+                if random.random() < 0.45:
+                    s += random.choice(consonants)
+                if random.random() < 0.18:  # 偶尔重复一个元音，拉长
+                    s += random.choice(vowels)
+            # 5% 概率添加短后缀增强区分
+            if random.random() < 0.05:
+                s += "_" + random.choice("abcdefghijklmnopqrstuvwxyz")
+            return s
+
+        out, seen = [], set()
+        while len(out) < n:
+            w = one_word()
+            # 确保唯一性；碰撞时加随机数字后缀
+            if w in seen:
+                w = f"{w}{random.randint(2, 97)}"
+                if w in seen:
+                    continue
+            seen.add(w)
+            out.append(w)
+        return out
+
+    def _generate_llm_semantics(self, variables: List[str]) -> Dict[str, str]:
+        """用 LLM 起名；返回 {V: name}；失败返回 {}。
+        规范化为 snake_case ASCII，小写；名称不强加领域限制。
+        """
+        try:
+            var_list = ", ".join(variables)
+            sys_prompt = (
+                "You will assign short, diverse proposition names for logic variables. "
+                "Return a pure JSON object; keys are the original variable tokens "
+                "(e.g., V1, V2); values are concise snake_case ASCII names. "
+                "Avoid long phrases; ensure uniqueness."
+            )
+            user_prompt = (
+                f"Variables: [{var_list}]. "
+                "Return only JSON like {\"V1\":\"wernyra\",\"V2\":\"alert_raised\",...} with unique values."
+            )
+            resp = self.llm.call(f"{sys_prompt}\n{user_prompt}")
+            i, j = resp.find("{"), resp.rfind("}") + 1
+            if i == -1 or j <= i:
+                return {}
+            mapping = json.loads(resp[i:j])
+
+            # 规范化 & 去重
+            out, used = {}, set()
+            for v in variables:
+                cand = str(mapping.get(v, "")).strip().lower()
+                if not cand:
+                    continue
+                cand = "".join(ch for ch in cand if ch.isalnum() or ch == "_")
+                cand = cand or random.choice(self._gen_pseudowords(1))
+                if cand in used:
+                    cand = f"{cand}_{random.randint(2, 99)}"
+                used.add(cand)
+                out[v] = cand
+
+            # 如果不足，补齐
+            if len(out) < len(variables):
+                extras = self._gen_pseudowords(len(variables) - len(out))
+                for v, e in zip([x for x in variables if x not in out], extras):
+                    out[v] = e
+            return out
+        except Exception:
+            return {}
 
     # -------------------- 冗余判定（克制版） --------------------
     def _is_redundant_implication_safe(self, premise_str: str, conclusion_str: str, var_bindings: Dict[str, str]) -> bool:
@@ -267,9 +349,11 @@ class DatasetGenerator:
         self,
         max_depth: int = 3,
         sample_id: Optional[str] = None,
-        target_depth_range: Optional[Tuple[int, int]] = None,  # 新增：最终“保留深度”必须落在这个区间
+        target_depth_range: Optional[Tuple[int, int]] = None,
     ) -> Optional[Dict[str, Any]]:
-        sample_id = sample_id or f"{random.randint(10000, 99999)}"
+        # 为每条样本分配 UUID；统一使用 UUID 作为样本 ID 与图名
+        sample_uuid = str(uuid.uuid4())
+
         for attempt in range(self.max_retry_attempts):
             try:
                 self.logger.info(f"构建DAG：深度={max_depth}，尝试={attempt + 1}")
@@ -277,6 +361,15 @@ class DatasetGenerator:
                     max_depth=max_depth,
                     min_depth=max(max_depth // 3, 2)
                 )
+
+                # 去重统计本次用到的规则
+                rules_used = sorted({
+                    (s.get("rule") or "").strip()
+                    for s in (logical_steps or [])
+                    if s.get("rule") and s.get("rule") != "Unknown"
+                })
+                self.logger.info("Rules used (dedup): %s", ", ".join(rules_used) if rules_used else "(none)")
+
                 if not logical_steps:
                     self.logger.warning("逻辑步骤为空，重试")
                     continue
@@ -325,12 +418,19 @@ class DatasetGenerator:
 
                 self.logger.info(f"变量数（实际使用）: {used_cnt}; 步骤 kept: {steps_kept}")
 
-                # Prompt 构造
+                # Prompt 构造（gibberish 时温和提醒“聚焦逻辑，不引入现实语义”）
+                extra_guidance = ""
+                if self.semantic_binding_mode == "gibberish":
+                    extra_guidance = (
+                        "Note: variable names are abstract tokens without real-world semantics. "
+                        "Focus on logical consistency; do not inject external world knowledge."
+                    )
+
                 prompt = self.prompt_builder.build_constrained_prompt(
                     z3_exprs=z3_exprs,
                     var_bindings=var_bindings,
                     logical_steps=valid_steps,
-                    previous_violations=[],
+                    previous_violations=[extra_guidance] if extra_guidance else [],
                 )
 
                 # 调用 LLM
@@ -353,19 +453,24 @@ class DatasetGenerator:
                 if not is_valid:
                     self.logger.warning(f"质量校验警告：{violations}")
 
-                # 元数据（清晰拆分）
+                # 基本字段 & 元数据
+                sample["id"] = sample_uuid  # 用 UUID 作为样本 ID
+                sample["z3"] = z3_exprs
                 sample["metadata"] = {
+                    "uuid": sample_uuid,
                     "steps": {"built": steps_built, "validated": steps_valid, "kept": steps_kept},
                     "variables": {"extracted": extracted_cnt, "used": used_cnt},
                     "variable_control": {"max": self.max_variables, "min": self.min_variables, "actual": used_cnt},
                     "reasoning_depth": steps_kept,          # 兼容旧字段
                     "variables_count": extracted_cnt,        # 兼容旧字段
                     "has_warnings": not is_valid,
+                    "rules_used": rules_used,                # 规则清单（去重）
+                    "semantic_mode": self.semantic_binding_mode,  # 记录当前语义绑定模式
                 }
 
-                # 可视化（保持原风格）
+                # 可视化（图名=UUID）
                 if root is not None:
-                    viz = self._generate_dag_visualization(root, sample_id, sample.get("metadata"))
+                    viz = self._generate_dag_visualization(root, sample_uuid, sample.get("metadata"))
                     if viz:
                         sample["visualization_path"] = viz
 
@@ -408,11 +513,10 @@ class DatasetGenerator:
             attempts += 1
             # 仍按你原来的做法随机给 builder 一个目标深度；最终“保留深度”再用区间校验
             build_depth = random.randint(dmin, dmax)
-            sid = f"sample_{len(ok)+1:04d}_{attempts:04d}"
 
             sample = self.generate_single_sample(
                 max_depth=build_depth,
-                sample_id=sid,
+                sample_id=None,                  # 内部统一使用 UUID
                 target_depth_range=max_depth_range,  # 关键：最终产物必须在这个区间
             )
 
@@ -443,13 +547,14 @@ def main():
         min_variables=5,
         enable_visualization=True,
         viz_output_dir="output/dag_visualizations",
+        semantic_binding_mode="gibberish",  # 或 "llm"
     )
 
     # 小批量验证
     out_file = "output/lsat_dataset_clean.jsonl"
     if os.path.exists(out_file):
         os.remove(out_file)
-    generator.generate_dataset(num_samples=1, output_path=out_file, max_depth_range=(8, 15))
+    generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(3, 10))
 
 
 if __name__ == "__main__":

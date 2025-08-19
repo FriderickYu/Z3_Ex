@@ -107,21 +107,31 @@ class EnhancedPromptBuilder:
         return "\n".join(desc_parts)
 
     def _build_logic_constraints(self, constraints: Dict) -> str:
-        """构建逻辑约束描述"""
-        logic_parts = []
+        """Build high-level logical constraints aligned with rule library and distractor logic.
+        Provides only directional and consistency requirements, without specifying concrete rules,
+        fixed sentence patterns, or distractor strategies.
+        """
+        steps = constraints.get("inference_chain_length", 0)
 
-        logic_parts.append("**逻辑结构要求：**")
-        logic_parts.append(f"- 推理链包含 {constraints['inference_chain_length']} 个步骤")
+        parts = []
+        parts.append("**Logical Structure Requirements (aligned with rule library and distractors):**")
+        parts.append(f"- The reasoning chain should contain around {steps} steps (±1 variation allowed).")
+        parts.append(
+            "- The reasoning process should unfold step by step: each conclusion depends only on the given premises or prior conclusions, with no jumps.")
+        parts.append(
+            "- Multiple logical relations may be used; do not restrict to any specific rule or fixed expression.")
+        parts.append(
+            "- Natural language should clearly reflect the reasoning process, but without enforcing fixed templates or repetitive phrasing.")
+        parts.append(
+            "- Variables and terms must remain consistent with the provided bindings; no undefined symbols are allowed.")
+        parts.append(
+            "- Exactly one option must be strictly derivable under the premises and rules; all other options should be non-derivable yet plausible.")
+        parts.append(
+            "- Distractors should achieve non-derivability through minimal necessary differences (the exact strategies are handled by the generator).")
+        parts.append(
+            "- Explanations must avoid revealing hints like 'correct' or 'incorrect'; maintain neutrality and variety in expression.")
 
-        if constraints["requires_implication"]:
-            logic_parts.append("- 必须包含条件推理（如果...那么...）")
-        if constraints["requires_conjunction"]:
-            logic_parts.append("- 必须包含合取关系（...并且...）")
-
-        logic_parts.append("- 自然语言描述必须清晰体现推理的逻辑结构")
-        logic_parts.append("- 正确答案必须通过完整的推理链才能得出")
-
-        return "\n".join(logic_parts)
+        return "\n".join(parts)
 
     def _assemble_enhanced_prompt(
             self,
