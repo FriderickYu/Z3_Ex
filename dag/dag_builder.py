@@ -1,4 +1,4 @@
-# 文件：dag/dag_builder.py（更新版）
+# 文件：dag/dag_builder.py
 # 说明：构建支持多规则组合的逻辑推理 DAG，使用统一变量命名系统
 
 import random
@@ -10,6 +10,15 @@ from typing import List, Dict, Optional, Tuple
 import z3
 from rules.rules_pool import rule_pool
 from utils.variable_manager import variable_manager, EnhancedVariableExtractor
+
+# -----------------------------------------------------------------------------
+# 默认最大分支数
+#
+# 过去版本中对 DAG 的宽度控制是通过硬编码的数字实现的，这导致配置不统一
+# 并且难以调整。这里定义 DEFAULT_MAX_BRANCHING 作为默认值，实际值可通过
+# 构建器的入参 max_branching 进行调整。推荐在 1-4 之间取值，避免复杂度爆炸。
+
+DEFAULT_MAX_BRANCHING = 4
 
 
 class DAGNode:
@@ -27,7 +36,7 @@ class DAGNode:
 class ShortChainDAGBuilder:
     """短链条DAG构建器（2-5步）：使用统一变量命名"""
 
-    def __init__(self, max_depth=5, min_depth=2):
+    def __init__(self, max_depth=5, min_depth=2, max_branching: int = DEFAULT_MAX_BRANCHING):
         self.max_depth = max_depth
         self.min_depth = min_depth
         self.node_counter = 0
@@ -35,6 +44,8 @@ class ShortChainDAGBuilder:
         self.processing_expressions = set()
         self.max_recursion_depth = 6
         self.current_recursion_depth = 0
+        # 每个节点的最大子节点数量，默认值为 DEFAULT_MAX_BRANCHING，可通过入参调整
+        self.max_branching = max_branching if max_branching and max_branching > 0 else DEFAULT_MAX_BRANCHING
 
     def build(self):
         """构建短推理链"""
@@ -101,6 +112,10 @@ class ShortChainDAGBuilder:
                 var = variable_manager.create_variable("Goal")
                 final_premises.append(var)
 
+            # 限制最终前提数量，避免宽度超过 max_branching
+            if len(final_premises) > self.max_branching:
+                final_premises = final_premises[: self.max_branching]
+
             # 构造最终结论
             try:
                 final_conclusion = final_rule.construct_conclusion(final_premises)
@@ -154,8 +169,8 @@ class ShortChainDAGBuilder:
                     sub_premises.append(variable_manager.create_variable("SubPremise"))
 
             # 限制子前提数量
-            if len(sub_premises) > 3:
-                sub_premises = sub_premises[:3]
+            if len(sub_premises) > self.max_branching:
+                sub_premises = sub_premises[: self.max_branching]
 
             if not self._can_apply_rule_safely(rule, sub_premises):
                 return DAGNode(target_premise, depth=remaining_depth)
@@ -250,11 +265,13 @@ class ShortChainDAGBuilder:
 class LongChainDAGBuilder:
     """长链条DAG构建器（5+步）：使用统一变量命名"""
 
-    def __init__(self, max_depth=15, min_depth=5):
+    def __init__(self, max_depth=15, min_depth=5, max_branching: int = DEFAULT_MAX_BRANCHING):
         self.max_depth = max_depth
         self.min_depth = min_depth
         self.logger = logging.getLogger("long_chain_dag_builder")
         self.used_expressions = set()
+        # 每个节点的最大子节点数量，默认值为 DEFAULT_MAX_BRANCHING，可通过入参调整
+        self.max_branching = max_branching if max_branching and max_branching > 0 else DEFAULT_MAX_BRANCHING
 
     def build_long_chain(self) -> Optional[DAGNode]:
         """构建长逻辑链条"""
@@ -339,11 +356,12 @@ class LongChainDAGBuilder:
         try:
             if hasattr(rule, 'generate_premises'):
                 premises = rule.generate_premises(conclusion)
-                if premises and len(premises) <= 4:
+                # 仅当生成的前提数量在允许范围内时直接使用
+                if premises and len(premises) <= self.max_branching:
                     return premises
 
             # 回退：使用统一变量命名生成新前提
-            num_premises = min(rule.num_premises(), 3)
+            num_premises = min(rule.num_premises(), self.max_branching)
             premises = []
 
             for i in range(num_premises):
@@ -538,19 +556,24 @@ def _get_rule_type(rule_name):
 
 
 # 统一接口函数
-def build_reasoning_dag(max_depth=5, min_depth=2) -> Tuple[Optional[DAGNode], List[Dict]]:
+def build_reasoning_dag(max_depth=5, min_depth=2, max_branching: int = DEFAULT_MAX_BRANCHING) -> Tuple[Optional[DAGNode], List[Dict]]:
     """
     构建推理DAG的统一接口
     使用统一变量命名系统
+
+    Args:
+        max_depth: 推理链最大深度
+        min_depth: 推理链最小深度
+        max_branching: 每个节点可拥有的最大子节点数量，推荐 1-4
     """
     try:
         if max_depth <= 5:
             # 短链条：使用递归方式
-            builder = ShortChainDAGBuilder(max_depth=max_depth, min_depth=min_depth)
+            builder = ShortChainDAGBuilder(max_depth=max_depth, min_depth=min_depth, max_branching=max_branching)
             root_node = builder.build()
         else:
             # 长链条：使用迭代方式
-            builder = LongChainDAGBuilder(max_depth=max_depth, min_depth=min_depth)
+            builder = LongChainDAGBuilder(max_depth=max_depth, min_depth=min_depth, max_branching=max_branching)
             root_node = builder.build_long_chain()
 
         if root_node is None:
@@ -577,6 +600,6 @@ def extract_logical_steps_improved(root_node):
     return extract_logical_steps(root_node)
 
 
-def build_long_reasoning_chain(max_depth=15, min_depth=5):
+def build_long_reasoning_chain(max_depth=15, min_depth=5, max_branching: int = DEFAULT_MAX_BRANCHING):
     """专用长链条接口"""
-    return build_reasoning_dag(max_depth=max_depth, min_depth=min_depth)
+    return build_reasoning_dag(max_depth=max_depth, min_depth=min_depth, max_branching=max_branching)

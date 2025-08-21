@@ -20,7 +20,6 @@ from utils.consistency_validator import ConsistencyValidator
 from utils.enhanced_prompt_builder import EnhancedPromptBuilder
 from utils.variable_manager import EnhancedVariableExtractor
 
-# 仅用于“克制版”冗余判定（显然废话）
 from utils.tautology_check import parse_formula, quick_obvious_redundancy
 from z3 import Bool
 
@@ -32,26 +31,31 @@ class DatasetGenerator:
         self,
         llm_dispatcher: LLMDispatcher,
         prompt_template_path: str,
-        max_variables: int = 8,
-        min_variables: int = 3,
+        *,
         enable_visualization: bool = True,
         viz_output_dir: str = "output/dag_visualizations",
-        # 只保留两种模式：gibberish / llm
+        # 仅支持两种模式：gibberish 或 llm
         semantic_binding_mode: str = "gibberish",
+        max_branching: int = 4,
     ) -> None:
         self.llm = llm_dispatcher
         self.logger = logging.getLogger("dataset_generator")
 
-        self.extractor = EnhancedVariableExtractor(max_variables=max_variables, min_variables=min_variables)
+        # 固定变量数量上下限。过去通过变量个数控制复杂度，现统一将
+        # 上限设为 50，下限设为 1，仅用于抽取统计，不再作为丢弃样本的依据。
+        self.max_variables = 50
+        self.min_variables = 1
+        self.extractor = EnhancedVariableExtractor(max_variables=self.max_variables, min_variables=self.min_variables)
         self.validator = ConsistencyValidator(strictness_level="medium")
         self.prompt_builder = EnhancedPromptBuilder(prompt_template_path)
 
         self.max_retry_attempts = 5
         self.min_valid_steps = 2
-        self.max_valid_steps = 6  # 注意：实际截断会跟随 target_depth_range 动态放宽
+        # 注意：实际截断会跟随 target_depth_range 动态放宽
+        self.max_valid_steps = 6
 
-        self.max_variables = max_variables
-        self.min_variables = min_variables
+        # 记录 DAG 最大分支数，用于传递给 DAG 构建器
+        self.max_branching = max_branching if max_branching and max_branching > 0 else 4
 
         self.enable_visualization = enable_visualization
         self.viz_output_dir = viz_output_dir
@@ -359,7 +363,8 @@ class DatasetGenerator:
                 self.logger.info(f"构建DAG：深度={max_depth}，尝试={attempt + 1}")
                 root, logical_steps = build_reasoning_dag(
                     max_depth=max_depth,
-                    min_depth=max(max_depth // 3, 2)
+                    min_depth=max(max_depth // 3, 2),
+                    max_branching=self.max_branching
                 )
 
                 # 去重统计本次用到的规则
@@ -410,11 +415,12 @@ class DatasetGenerator:
                         continue
 
                 # 2) 最终实际变量数 ∈ [min_variables, max_variables]
+                # 注意：从本次版本起，变量数量仅用于警告统计，不再作为丢弃样本的依据
                 if not (self.min_variables <= used_cnt <= self.max_variables):
                     self.logger.info(
-                        f"丢弃样本：variables.used={used_cnt} 不在 [{self.min_variables},{self.max_variables}] 内，重试"
+                        f"变量数（实际使用）{used_cnt} 不在 [{self.min_variables},{self.max_variables}] 内，继续使用"
                     )
-                    continue
+                    # 不再继续 next; 仍然使用该样本
 
                 self.logger.info(f"变量数（实际使用）: {used_cnt}; 步骤 kept: {steps_kept}")
 
@@ -543,15 +549,14 @@ def main():
     generator = DatasetGenerator(
         llm_dispatcher=llm,
         prompt_template_path="prompt/lsat_prompt.txt",
-        max_variables=20,
-        min_variables=5,
         enable_visualization=True,
         viz_output_dir="output/dag_visualizations",
         semantic_binding_mode="gibberish",  # 或 "llm"
+        max_branching=5
     )
 
     # 小批量验证
-    out_file = "output/lsat_dataset_0819.jsonl"
+    out_file = "output/lsat_dataset_0822.jsonl"
     if os.path.exists(out_file):
         os.remove(out_file)
     generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(3, 10))
