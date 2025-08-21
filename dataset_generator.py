@@ -3,6 +3,8 @@
 # 说明：基于真实逻辑规则的LSAT风格数据集生成器（保持原有 DAG 可视化风格）
 
 import json
+import re  # For regex-based variable substitution
+from utils.text_similarity import TextSimilarity  # For context similarity measurement
 import logging
 import random
 import os
@@ -20,6 +22,7 @@ from utils.consistency_validator import ConsistencyValidator
 from utils.enhanced_prompt_builder import EnhancedPromptBuilder
 from utils.variable_manager import EnhancedVariableExtractor
 
+# 仅用于“克制版”冗余判定（显然废话）
 from utils.tautology_check import parse_formula, quick_obvious_redundancy
 from z3 import Bool
 
@@ -51,8 +54,7 @@ class DatasetGenerator:
 
         self.max_retry_attempts = 5
         self.min_valid_steps = 2
-        # 注意：实际截断会跟随 target_depth_range 动态放宽
-        self.max_valid_steps = 6
+        self.max_valid_steps = 6  # 注意：实际截断会跟随 target_depth_range 动态放宽
 
         # 记录 DAG 最大分支数，用于传递给 DAG 构建器
         self.max_branching = max_branching if max_branching and max_branching > 0 else 4
@@ -252,9 +254,13 @@ class DatasetGenerator:
                 if not premises_expr or conclusion_expr is None:
                     continue
 
+                # Use regex for robust substitution. Replace full variable names only.
                 def _subst(s: str) -> str:
-                    for var, sem in var_bindings.items():
-                        s = s.replace(var, sem)
+                    # Sort variables by length descending to avoid partial replacements (e.g., V1 inside V10)
+                    for var in sorted(var_bindings.keys(), key=len, reverse=True):
+                        sem = var_bindings[var]
+                        # Replace whole-word matches using word boundaries. re.escape handles special chars.
+                        s = re.sub(r'\b' + re.escape(var) + r'\b', sem, s)
                     return s
 
                 premise_strs: List[str] = []
@@ -302,7 +308,12 @@ class DatasetGenerator:
     # -------------------- 干扰项 --------------------
     def _create_distractors(self, logical_steps: List[Dict], var_bindings: Dict[str, str]) -> List[str]:
         try:
-            var_names = list(var_bindings.keys())
+            # 在 gibberish 模式下，干扰项应使用伪词而非原始变量名，以免泄露
+            if self.semantic_binding_mode == "gibberish":
+                var_names = list(var_bindings.values())
+            else:
+                var_names = list(var_bindings.keys())
+
             safe_vars = self.extractor.create_safe_bool_vars(var_names)
             if not safe_vars:
                 return self._fallback_distractors()
@@ -432,11 +443,22 @@ class DatasetGenerator:
                         "Focus on logical consistency; do not inject external world knowledge."
                     )
 
+                # 增加场景多样性提醒：请确保每道题目采用不同背景
+                variety_guidance = (
+                    "Please ensure each question uses a different scenario or background; do not reuse previous settings."
+                )
+
+                # 根据语义模式隐藏原始变量名：gibberish 时使用伪词自身映射
+                if self.semantic_binding_mode == "gibberish":
+                    prompt_var_bindings = {sem: sem for sem in var_bindings.values()}
+                else:
+                    prompt_var_bindings = var_bindings
+
                 prompt = self.prompt_builder.build_constrained_prompt(
                     z3_exprs=z3_exprs,
-                    var_bindings=var_bindings,
+                    var_bindings=prompt_var_bindings,
                     logical_steps=valid_steps,
-                    previous_violations=[extra_guidance] if extra_guidance else [],
+                    previous_violations=[msg for msg in (extra_guidance, variety_guidance) if msg],
                 )
 
                 # 调用 LLM
@@ -506,36 +528,53 @@ class DatasetGenerator:
 
     # -------------------- 数据集批量生成 --------------------
     def generate_dataset(self, num_samples: int, output_path: str, max_depth_range: Tuple[int, int] = (5, 8)) -> None:
+        """
+        批量生成数据集，并可选择通过相似度过滤过于相似的样本。
+
+        如果实例上存在属性 similarity_threshold（0.0~1.0），则对新生成样本的 context 与已接受样本的 context 进行相似度比较；
+        当相似度不小于该阈值时将丢弃样本并重试。此功能用于减少语料重复，提高多样性。
+        """
         self.logger.info(f"开始生成数据集：{num_samples} 条")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
         ok: List[Dict[str, Any]] = []
         attempts = 0
-        max_attempts = max(num_samples * 6, num_samples + 6)  # 略微提高重试上限，满足区间更稳定
+        max_attempts = max(num_samples * 6, num_samples + 6)
 
         dmin, dmax = max_depth_range
+        similarity_threshold: Optional[float] = getattr(self, "similarity_threshold", None)
+        sim_filter: Optional[TextSimilarity] = None
+        # 当设置了相似度阈值时，初始化文本相似度过滤器
+        if similarity_threshold is not None:
+            sim_filter = TextSimilarity(similarity_threshold)
 
         while len(ok) < num_samples and attempts < max_attempts:
             attempts += 1
-            # 仍按你原来的做法随机给 builder 一个目标深度；最终“保留深度”再用区间校验
             build_depth = random.randint(dmin, dmax)
-
             sample = self.generate_single_sample(
                 max_depth=build_depth,
-                sample_id=None,                  # 内部统一使用 UUID
-                target_depth_range=max_depth_range,  # 关键：最终产物必须在这个区间
+                sample_id=None,
+                target_depth_range=max_depth_range,
             )
+
+            # 相似度过滤：使用 sim_filter 判断是否过于相似
+            if sample and sim_filter is not None and sample.get("context"):
+                ctx = sample["context"]
+                if not sim_filter.is_unique(ctx):
+                    self.logger.info(
+                        "丢弃样本：生成的上下文与已有样本过于相似，重试"
+                    )
+                    sample = None
 
             if sample:
                 ok.append(sample)
+                if sim_filter is not None and sample.get("context"):
+                    sim_filter.add(sample["context"])
                 self.logger.info(f"已生成：{len(ok)}/{num_samples}")
+                with open(output_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(sample, ensure_ascii=False) + "\n")
             else:
                 self.logger.warning("本次失败，继续…")
-
-            # 逐条写入（节省内存）
-            with open(output_path, "a", encoding="utf-8") as f:
-                if sample:
-                    f.write(json.dumps(sample, ensure_ascii=False) + "\n")
 
         self.logger.info(f"完成，输出：{output_path}")
 
@@ -552,14 +591,18 @@ def main():
         enable_visualization=True,
         viz_output_dir="output/dag_visualizations",
         semantic_binding_mode="gibberish",  # 或 "llm"
-        max_branching=5
+        max_branching=4  # 可以根据需要调整每个节点的最大分支数
     )
 
+    # 设置可选的语义相似度阈值（0.0~1.0），用于过滤过于相似的上下文。
+    # 设置为 None 时不启用该过滤；此处示例为 0.8，可根据需要调整。
+    generator.similarity_threshold = 0.7
+
     # 小批量验证
-    out_file = "output/lsat_dataset_0822.jsonl"
+    out_file = "output/lsat_dataset_0822_v4.jsonl"
     if os.path.exists(out_file):
         os.remove(out_file)
-    generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(3, 10))
+    generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(6, 10))
 
 
 if __name__ == "__main__":
