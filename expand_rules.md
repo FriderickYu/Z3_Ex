@@ -112,5 +112,3 @@
 ### 模运算（2个，侧条件：n > 0）
 * ModularAddition（加法同余）：`a ≡ b (mod n), c ≡ d (mod n) ⊢ a + c ≡ b + d (mod n)`
 * ModularTransitivity（同余传递）：`a ≡ b (mod n), b ≡ c (mod n) ⊢ a ≡ c (mod n)`
-
-我现在想要扩充rules/下面的rules库，上面是包含已经有的规则（8个），扩充的所有rules，一共76个，现在首先，我想让你验证一下上面所有的76个rules，是否都能在较小的代价下，兼容目前的代码结构；其次，我想请你帮我设计一下这些rules在rules/目录下如何在尽可能的利用现有代码和架构下的组织架构，尤其是如何组织rule_pool.py。最终请用中文回复我
