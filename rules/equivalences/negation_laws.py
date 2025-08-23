@@ -1,0 +1,1 @@
+# NegationLaws（排中/矛盾）：`P∨¬P ⟷ ⊤；P∧¬P ⟷ ⊥`

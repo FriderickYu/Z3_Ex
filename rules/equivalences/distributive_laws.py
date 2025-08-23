@@ -1,0 +1,1 @@
+# DistributiveLaws（分配律）：`P∧(Q∨R) ⟷ (P∧Q)∨(P∧R)；P∨(Q∧R) ⟷ (P∨Q)∧(P∨R)`

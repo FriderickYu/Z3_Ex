@@ -1,0 +1,1 @@
+# IdentityLaws（同一律）：`P∧⊤ ⟷ P；P∨⊥ ⟷ P`

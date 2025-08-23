@@ -1,0 +1,1 @@
+# SquareNonnegativity（平方非负，ℝ）：`x ∈ ℝ ⊢ x² ≥ 0`

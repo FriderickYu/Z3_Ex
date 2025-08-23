@@ -1,0 +1,1 @@
+# MaterialImplication（蕴含等价）：`P→Q ⟷ ¬P∨Q`

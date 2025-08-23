@@ -1,0 +1,1 @@
+# DominationLaws（支配/恒等式）：`P∨⊤ ⟷ ⊤；P∧⊥ ⟷ ⊥`

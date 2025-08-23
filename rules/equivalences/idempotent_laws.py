@@ -1,0 +1,1 @@
+# IdempotentLaws（幂等律）：`P∧P ⟷ P；P∨P ⟷ P`

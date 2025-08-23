@@ -1,0 +1,1 @@
+# BiconditionalDecomposition（双条件分解）：`P↔Q ⟷ (P→Q)∧(Q→P)`

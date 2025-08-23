@@ -1,0 +1,1 @@
+# AbsorptionLaws（吸收律）：`P∨(P∧Q) ⟷ P；P∧(P∨Q) ⟷ P`

@@ -1,0 +1,1 @@
+# Contraposition（对当等价）：`P→Q ⟷ ¬Q→¬P`

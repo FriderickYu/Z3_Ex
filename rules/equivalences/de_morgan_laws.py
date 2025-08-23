@@ -1,0 +1,1 @@
+# DeMorganLaws（德摩根）：`¬(P∧Q) ⟷ (¬P∨¬Q)；¬(P∨Q) ⟷ (¬P∧¬Q)`

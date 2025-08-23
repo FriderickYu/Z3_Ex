@@ -1,0 +1,1 @@
+# AssociativeLaws（结合律）：`(P∧Q)∧R ⟷ P∧(Q∧R)；(P∨Q)∨R ⟷ P∨(Q∨R)`
