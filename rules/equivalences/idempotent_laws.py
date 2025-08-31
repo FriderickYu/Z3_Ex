@@ -1,4 +1,8 @@
-# IdempotentLaws（幂等律）：`P∧P ⟷ P；P∨P ⟷ P`
+"""
+布尔代数律
+幂等律
+P∧P ⟷ P 和 P∨P ⟷ P
+"""
 
 import z3
 import random

@@ -599,10 +599,10 @@ def main():
     generator.similarity_threshold = 0.7
 
     # 小批量验证
-    out_file = "output/lsat_dataset_0822_v4.jsonl"
+    out_file = "output/lsat_dataset_0824_v1.jsonl"
     if os.path.exists(out_file):
         os.remove(out_file)
-    generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(6, 10))
+    generator.generate_dataset(num_samples=2, output_path=out_file, max_depth_range=(8, 10))
 
 
 if __name__ == "__main__":

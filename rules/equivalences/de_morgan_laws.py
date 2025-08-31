@@ -1,4 +1,8 @@
-# DeMorganLaws（德摩根）：`¬(P∧Q) ⟷ (¬P∨¬Q)；¬(P∨Q) ⟷ (¬P∧¬Q)`
+"""
+等价规则
+德摩根律
+¬(P∧Q) ⟷ (¬P∨¬Q) 和 ¬(P∨Q) ⟷ (¬P∧¬Q)
+"""
 
 import z3
 import random

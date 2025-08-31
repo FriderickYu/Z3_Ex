@@ -1,4 +1,8 @@
-# NegationLaws（排中/矛盾）：`P∨¬P ⟷ ⊤；P∧¬P ⟷ ⊥`
+"""
+布尔代数律
+否定律（排中律/矛盾律）
+P∨¬P ⟷ ⊤ 和 P∧¬P ⟷ ⊥
+"""
 
 import z3
 import random

@@ -1,4 +1,8 @@
-# DominationLaws（支配/恒等式）：`P∨⊤ ⟷ ⊤；P∧⊥ ⟷ ⊥`
+"""
+布尔代数律
+支配律
+P∨⊤ ⟷ ⊤ 和 P∧⊥ ⟷ ⊥
+"""
 
 import z3
 import random

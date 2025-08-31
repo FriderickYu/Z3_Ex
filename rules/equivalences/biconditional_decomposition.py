@@ -1,4 +1,8 @@
-# BiconditionalDecomposition（双条件分解）：`P↔Q ⟷ (P→Q)∧(Q→P)`
+"""
+等价规则
+双条件分解
+P↔Q ⟷ (P→Q)∧(Q→P)
+"""
 
 import z3
 from utils.variable_manager import RuleVariableMixin

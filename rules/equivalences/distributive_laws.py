@@ -1,4 +1,8 @@
-# DistributiveLaws（分配律）：`P∧(Q∨R) ⟷ (P∧Q)∨(P∧R)；P∨(Q∧R) ⟷ (P∨Q)∧(P∨R)`
+"""
+布尔代数律
+分配律
+P∧(Q∨R) ⟷ (P∧Q)∨(P∧R) 和 P∨(Q∧R) ⟷ (P∨Q)∧(P∨R)
+"""
 
 import z3
 import random

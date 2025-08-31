@@ -1,4 +1,8 @@
-# IdentityLaws（同一律）：`P∧⊤ ⟷ P；P∨⊥ ⟷ P`
+"""
+布尔代数律
+同一律
+P∧⊤ ⟷ P 和 P∨⊥ ⟷ P
+"""
 
 import z3
 import random

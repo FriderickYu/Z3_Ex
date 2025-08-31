@@ -1,4 +1,8 @@
-# DoubleNegation（双重否定）：`¬¬P ⟷ P`
+"""
+等价规则
+双重否定律
+¬¬P ⟷ P
+"""
 
 import z3
 import random

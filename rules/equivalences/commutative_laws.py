@@ -1,4 +1,8 @@
-# CommutativeLaws（交换律）：`P∧Q ⟷ Q∧P；P∨Q ⟷ Q∨P`
+"""
+布尔代数律
+交换律
+P∧Q ⟷ Q∧P 和 P∨Q ⟷ Q∨P
+"""
 
 import z3
 import random

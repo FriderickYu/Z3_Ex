@@ -1,4 +1,8 @@
-# MaterialImplication（蕴含等价）：`P→Q ⟷ ¬P∨Q`
+"""
+等价规则
+材料蕴含
+P→Q ⟷ ¬P∨Q
+"""
 
 import z3
 import random

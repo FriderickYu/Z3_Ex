@@ -1,4 +1,8 @@
-# Contraposition（对当等价）：`P→Q ⟷ ¬Q→¬P`
+"""
+等价规则
+逆否等价
+P→Q ⟷ ¬Q→¬P
+"""
 
 import z3
 import random

@@ -1,4 +1,8 @@
-# AbsorptionLaws（吸收律）：`P∨(P∧Q) ⟷ P；P∧(P∨Q) ⟷ P`
+"""
+布尔代数律
+吸收律
+P∨(P∧Q) ⟷ P 和 P∧(P∨Q) ⟷ P
+"""
 
 import z3
 import random
